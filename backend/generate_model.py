@@ -113,8 +113,8 @@ def _build_obj(
 
     # ── Ground plane ──────────────────────────────────────────────────────
     add_quad(
-        (-25, 0, -25), (25, 0, -25),
-        (25, 0, 25), (-25, 0, 25),
+        (-200, 0, -200), (200, 0, -200),
+        (200, 0, 200), (-200, 0, 200),
         "mat_ground"
     )
 
@@ -130,7 +130,7 @@ def _build_obj(
         bx, by = _latlon_to_xy(route_coords[i+1][0], route_coords[i+1][1], origin_lat, origin_lng)
 
         # Clamp to scene bounds
-        if abs(ax) > 40 or abs(ay) > 40 or abs(bx) > 40 or abs(by) > 40:
+        if abs(ax) > 200 or abs(ay) > 200 or abs(bx) > 200 or abs(by) > 200:
             continue
 
         dx = bx - ax
@@ -171,8 +171,12 @@ def _build_obj(
 
     # ── Simple buildings on either side ───────────────────────────────────
     building_positions = [
-        (-15, -15, 8), (10, -15, 12), (-15, 10, 6),
-        (10, 10, 10),  (-18, 0, 7),   (14, 0, 9),
+        (-20, -20, 8),  (15, -20, 12), (-20, 15, 6),
+    (15, 15, 10),   (-25, 0, 7),   (20, 0, 9),
+    (-20, -60, 8),  (15, -60, 10), (-20, 60, 7),
+    (15, 60, 11),   (-25, 40, 8),  (20, -40, 9),
+    (-20, -120, 8), (15, -120, 10),(-20, 120, 7),
+    (15, 120, 11),  (-25, 90, 8),  (20, -90, 9),
     ]
     for bx, bz, height in building_positions:
         hw = 4.0
@@ -228,7 +232,7 @@ def generate_and_upload(lat: float, lng: float, address: str) -> str:
     amenities = geo.nearest_amenities(lat, lng)
     hosp = amenities["hospital"]
     route = geo.walking_route((lat, lng), (hosp["lat"], hosp["lng"]))
-    coords = route["coords"][:30]  # limit to first 30 points for scene size
+    coords = route["coords"][:60]  # limit to first 30 points for scene size
     scores = cyvl_client.pavement_along_route(coords)
 
     # 3. Build OBJ + MTL
