@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import polyline from "@mapbox/polyline";
 
 const MAPBOX_TOKEN = process.env.REACT_APP_MAPBOX_TOKEN;
 const API_BASE = process.env.REACT_APP_API_BASE_URL || "http://localhost:8000";
@@ -72,46 +73,98 @@ function generateMockRoute(origin, destination) {
 // ---------------------------------------------------------------------------
 // Backend hookup point
 //
-// Expected shape (matches backend/main.py POST /api/route, extended with
-// per-segment repair_cost + street_name + total_repair_cost):
+// POST /api/directions {origin, destination} -> { segments: [...] }, where each
+// segment is a Google Maps walking step enriched with Cyvl pavement data:
 //
 // {
-//   distance_km: number,
-//   walkability_score: number,
-//   total_repair_cost: number,
-//   segments: [
-//     {
-//       id: number,
-//       from: [lng, lat],
-//       to: [lng, lat],
-//       street_name: string,
-//       pavement_score: number,   // 0-100
-//       band: "green" | "yellow" | "red",
-//       length_ft: number,
-//       repair_cost: number,
-//     }
-//   ]
+//   street_name: string,
+//   start: {lat, lng}, end: {lat, lng},
+//   distance_m: number, duration_s: number,
+//   polyline: string,   // encoded, decoded below with @mapbox/polyline
+//   infrastructure: { pavement_score: number | null, distress_count: number, signs: string[] }
 // }
+//
+// Reshaped here into the {distance_km, walkability_score, total_repair_cost,
+// segments} contract the rest of this component expects.
 // ---------------------------------------------------------------------------
+function directionsToRouteData(rawSegments) {
+  // Drop zero-length "turn here" steps -- their polyline decodes to a single
+  // point, which is not a valid GeoJSON LineString.
+  const segments = rawSegments
+    .filter((seg) => polyline.decode(seg.polyline).length >= 2)
+    .map((seg, i) => {
+      const coords = polyline.decode(seg.polyline).map(([lat, lng]) => [lng, lat]);
+      const pavement_score = seg.infrastructure?.pavement_score ?? 70;
+      const length_ft = seg.distance_m * 3.28084;
+      const repair_cost =
+        (Math.max(0, REPAIR_THRESHOLD - pavement_score) * REPAIR_COST_PER_FT * length_ft) / 100;
+
+      return {
+        id: i,
+        coords,
+        from: coords[0],
+        to: coords[coords.length - 1],
+        street_name: seg.street_name,
+        pavement_score: Math.round(pavement_score),
+        band: bandFromScore(pavement_score),
+        length_ft: Math.round(length_ft),
+        repair_cost,
+        distress_count: seg.infrastructure?.distress_count ?? 0,
+        signs: seg.infrastructure?.signs ?? [],
+      };
+    });
+
+  const distance_km = rawSegments.reduce((sum, s) => sum + s.distance_m, 0) / 1000;
+  const walkability_score = segments.length
+    ? Math.round(segments.reduce((sum, s) => sum + s.pavement_score, 0) / segments.length)
+    : 0;
+  const total_repair_cost = segments.reduce((sum, s) => sum + s.repair_cost, 0);
+
+  return { distance_km, walkability_score, total_repair_cost, segments };
+}
+
+const NO_ROUTE_MESSAGE =
+  "No walking route found between these locations. Try addresses that are closer together or reachable on foot.";
+
 async function fetchRouteAssessment(origin, destination) {
-  // Real backend call (POST /api/route). Send exact lat,lng from Mapbox so the
-  // backend doesn't re-geocode. Falls back to mock if the backend is down so
-  // the demo never breaks.
+  // Real backend call (POST /api/directions). Send exact lat,lng from Mapbox
+  // so the backend doesn't re-geocode.
+  let res;
   try {
-    const res = await fetch(`${API_BASE}/api/route`, {
+    res = await fetch(`${API_BASE}/api/directions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         origin: `${origin.lat},${origin.lng}`,
-        dest: `${destination.lat},${destination.lng}`,
+        destination: `${destination.lat},${destination.lng}`,
       }),
     });
-    if (!res.ok) throw new Error(`Route request failed: ${res.status}`);
-    return await res.json();
   } catch (e) {
-    console.warn("Backend /api/route unavailable, using mock:", e);
+    // Network error / backend unreachable -> fall back to mock so the demo
+    // never breaks.
+    console.warn("Backend /api/directions unreachable, using mock:", e);
     return generateMockRoute(origin, destination);
   }
+
+  if (res.status === 400) {
+    // Google Directions returned ZERO_RESULTS / NOT_FOUND -- no walking path
+    // exists between these points. This is a real "no route" case, not a
+    // backend failure, so surface it instead of masking it with mock data.
+    throw new Error(NO_ROUTE_MESSAGE);
+  }
+
+  if (!res.ok) {
+    console.warn(`Backend /api/directions error ${res.status}, using mock`);
+    return generateMockRoute(origin, destination);
+  }
+
+  const data = await res.json();
+  const routeData = directionsToRouteData(data.segments);
+  if (routeData.segments.length === 0) {
+    // All steps were zero-length (degenerate route) -- treat as no route.
+    throw new Error(NO_ROUTE_MESSAGE);
+  }
+  return routeData;
 }
 
 function routeToGeoJSON(routeData) {
@@ -126,7 +179,7 @@ function routeToGeoJSON(routeData) {
       },
       geometry: {
         type: "LineString",
-        coordinates: [s.from, s.to],
+        coordinates: s.coords || [s.from, s.to],
       },
     })),
   };
@@ -386,7 +439,10 @@ export default function RouteMap() {
         if (!cancelled) setRouteData(data);
       })
       .catch((e) => {
-        if (!cancelled) setError(e.message || "Failed to load route");
+        if (!cancelled) {
+          setError(e.message || "Failed to load route");
+          setRouteData(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -512,7 +568,7 @@ export default function RouteMap() {
         {
           type: "Feature",
           properties: {},
-          geometry: { type: "LineString", coordinates: [segment.from, segment.to] },
+          geometry: { type: "LineString", coordinates: segment.coords || [segment.from, segment.to] },
         },
       ],
     });
@@ -674,7 +730,37 @@ export default function RouteMap() {
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>
         ) : error ? (
-          <div style={{ padding: 20, fontSize: 13, color: "#f87171" }}>{error}</div>
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 32,
+              textAlign: "center",
+            }}
+          >
+            <div
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: "50%",
+                background: "rgba(248,113,113,0.08)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: 16,
+                fontSize: 24,
+              }}
+            >
+              ⚠️
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 500, color: "#f87171", marginBottom: 8 }}>
+              Couldn't load route
+            </div>
+            <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>{error}</div>
+          </div>
         ) : routeData ? (
           <>
             {/* Summary */}
