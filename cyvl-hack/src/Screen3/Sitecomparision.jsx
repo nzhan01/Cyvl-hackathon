@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+const API_BASE = "https://cyvl-hackathon.onrender.com";
+
 const DIMENSIONS = [
   { key: "navigation", label: "Navigation", costPerPoint: 2800 },
   { key: "healthcare", label: "Healthcare", costPerPoint: 3200 },
@@ -9,32 +11,15 @@ const DIMENSIONS = [
   { key: "displacement_risk", label: "Displacement risk", costPerPoint: 3500 },
 ];
 
-const MOCK_SCORES = {
-  "289 Broadway, Somerville": {
-    navigation: 58,
-    healthcare: 65,
-    outdoor_safety: 59,
-    emergency: 63,
-    social_connection: 55,
-    displacement_risk: 64,
-  },
-  "45 Holland St, Somerville": {
-    navigation: 40,
-    healthcare: 46,
-    outdoor_safety: 38,
-    emergency: 42,
-    social_connection: 48,
-    displacement_risk: 52,
-  },
-};
-
-function computeScores(address) {
-  if (MOCK_SCORES[address]) return MOCK_SCORES[address];
-  const seed = address.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  return DIMENSIONS.reduce((acc, d, i) => {
-    acc[d.key] = 35 + ((seed * (i + 7) * 13) % 55);
-    return acc;
-  }, {});
+function extractScores(data) {
+  return {
+    navigation: data.dimensions?.navigation ?? 0,
+    healthcare: data.dimensions?.healthcare ?? 0,
+    outdoor_safety: data.dimensions?.safety ?? 0,
+    emergency: data.dimensions?.emergency ?? 0,
+    social_connection: data.dimensions?.social ?? 0,
+    displacement_risk: data.dimensions?.displacement ?? 0,
+  };
 }
 
 function computeRepairCost(scores) {
@@ -52,7 +37,6 @@ function formatCost(n) {
 
 function ScoreBar({ score, isWinner, animate }) {
   const color = score < 45 ? "#ef4444" : score < 65 ? "#f59e0b" : "#22c55e";
-  const winnerGlow = isWinner ? `0 0 8px ${color}44` : "none";
   return (
     <div
       style={{
@@ -70,7 +54,7 @@ function ScoreBar({ score, isWinner, animate }) {
           background: color,
           borderRadius: 99,
           transition: "width 0.7s cubic-bezier(0.4,0,0.2,1)",
-          boxShadow: winnerGlow,
+          boxShadow: isWinner ? `0 0 8px ${color}44` : "none",
         }}
       />
     </div>
@@ -123,9 +107,32 @@ function WinnerChip() {
   );
 }
 
-function AddressInput({ label, value, onChange, onAnalyze, color }) {
+// ── Address input with autocomplete ──────────────────────────────────────────
+function AddressInput({ label, value, onChange, onAnalyze, color, loading }) {
+  const [suggestions, setSuggestions] = useState([]);
+
+  const search = async (query) => {
+    if (!query || query.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    try {
+      const res = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+          query
+        )}.json?access_token=${
+          process.env.REACT_APP_MAPBOX_TOKEN
+        }&proximity=-71.0998,42.3876&types=address&limit=5`
+      );
+      const data = await res.json();
+      setSuggestions(data.features || []);
+    } catch {
+      setSuggestions([]);
+    }
+  };
+
   return (
-    <div style={{ flex: 1 }}>
+    <div style={{ flex: 1, position: "relative" }}>
       <div
         style={{
           fontSize: 11,
@@ -148,10 +155,13 @@ function AddressInput({ label, value, onChange, onAnalyze, color }) {
           gap: 10,
         }}
       >
-        <span style={{ fontSize: 14, color }}>●</span>
+        <span style={{ fontSize: 14, color }}>{loading ? "⟳" : "●"}</span>
         <input
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value);
+            search(e.target.value);
+          }}
           placeholder="Enter address in Somerville..."
           onKeyDown={(e) => e.key === "Enter" && onAnalyze()}
           style={{
@@ -163,7 +173,7 @@ function AddressInput({ label, value, onChange, onAnalyze, color }) {
             fontSize: 14,
           }}
         />
-        {value && (
+        {value && !loading && (
           <button
             onClick={onAnalyze}
             style={{
@@ -182,15 +192,110 @@ function AddressInput({ label, value, onChange, onAnalyze, color }) {
           </button>
         )}
       </div>
+
+      {/* Autocomplete dropdown */}
+      {suggestions.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 50,
+            background: "rgba(15,23,42,0.98)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: "0 0 10px 10px",
+            overflow: "hidden",
+          }}
+        >
+          {suggestions.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => {
+                onChange(s.place_name);
+                setSuggestions([]);
+                onAnalyze();
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "10px 14px",
+                background: "none",
+                border: "none",
+                color: "#cbd5e1",
+                fontSize: 13,
+                cursor: "pointer",
+                borderBottom: "1px solid rgba(255,255,255,0.05)",
+              }}
+              onMouseOver={(e) =>
+                (e.currentTarget.style.background = "rgba(255,255,255,0.06)")
+              }
+              onMouseOut={(e) => (e.currentTarget.style.background = "none")}
+            >
+              <span style={{ color: "#f1f5f9", fontWeight: 500 }}>
+                {s.text}
+              </span>
+              <span style={{ color: "#64748b", marginLeft: 6 }}>
+                {s.place_name.replace(s.text + ", ", "").slice(0, 50)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function SiteCard({ label, address, scores, repairCost, isWinner, color }) {
-  if (!scores) return null;
-  const overall = Math.round(
-    Object.values(scores).reduce((a, b) => a + b, 0) / DIMENSIONS.length
-  );
+function SiteCard({
+  label,
+  address,
+  scores,
+  repairCost,
+  overallScore,
+  isWinner,
+  color,
+  error,
+}) {
+  if (!scores && !error)
+    return (
+      <div
+        style={{
+          flex: 1,
+          background: "#1e293b",
+          borderRadius: 12,
+          border: "1px solid rgba(255,255,255,0.08)",
+          padding: "18px 20px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <span style={{ fontSize: 12, color: "#475569" }}>
+          Enter an address above
+        </span>
+      </div>
+    );
+
+  if (error)
+    return (
+      <div
+        style={{
+          flex: 1,
+          background: "#1e293b",
+          borderRadius: 12,
+          border: "1px solid rgba(239,68,68,0.2)",
+          padding: "18px 20px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <span style={{ fontSize: 12, color: "#f87171" }}>
+          Could not load scores
+        </span>
+      </div>
+    );
 
   return (
     <div
@@ -255,7 +360,7 @@ function SiteCard({ label, address, scores, repairCost, isWinner, color }) {
             lineHeight: 1,
           }}
         >
-          {overall}
+          {overallScore}
         </span>
         <span style={{ fontSize: 16, color: "#475569", fontWeight: 400 }}>
           /100
@@ -269,46 +374,81 @@ function SiteCard({ label, address, scores, repairCost, isWinner, color }) {
 }
 
 export default function SiteComparison() {
-  const [addrA, setAddrA] = useState("289 Broadway, Somerville");
-  const [addrB, setAddrB] = useState("45 Holland St, Somerville");
-  const [scoresA, setScoresA] = useState(
-    computeScores("289 Broadway, Somerville")
-  );
-  const [scoresB, setScoresB] = useState(
-    computeScores("45 Holland St, Somerville")
-  );
-  const [analyzed, setAnalyzed] = useState(true);
+  const [addrA, setAddrA] = useState("");
+  const [addrB, setAddrB] = useState("");
+  const [scoresA, setScoresA] = useState(null);
+  const [scoresB, setScoresB] = useState(null);
+  const [overallA, setOverallA] = useState(null);
+  const [overallB, setOverallB] = useState(null);
+  const [errorA, setErrorA] = useState(null);
+  const [errorB, setErrorB] = useState(null);
+  const [loadingA, setLoadingA] = useState(false);
+  const [loadingB, setLoadingB] = useState(false);
   const [animate, setAnimate] = useState(true);
   const [reportA, setReportA] = useState(false);
   const [reportB, setReportB] = useState(false);
 
-  const analyze = () => {
-    if (!addrA || !addrB) return;
-    setAnimate(false);
-    setTimeout(() => {
-      setScoresA(computeScores(addrA));
-      setScoresB(computeScores(addrB));
-      setAnalyzed(true);
-      setReportA(false);
-      setReportB(false);
-      setTimeout(() => setAnimate(true), 50);
-    }, 80);
+  const fetchScores = async (
+    address,
+    setSite,
+    setOverall,
+    setError,
+    setLoading
+  ) => {
+    if (!address.trim()) return;
+    setLoading(true);
+    setError(null);
+    setSite(null);
+
+    try {
+      const geoRes = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+          address
+        )}.json?access_token=${
+          process.env.REACT_APP_MAPBOX_TOKEN
+        }&proximity=-71.0998,42.3876&limit=1`
+      );
+      const geoData = await geoRes.json();
+      if (!geoData.features?.length) throw new Error("Address not found");
+      const [lng, lat] = geoData.features[0].center;
+
+      const res = await fetch(`${API_BASE}/api/score-address`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat, lng }),
+      });
+      if (!res.ok) throw new Error(`Score request failed: ${res.status}`);
+      const data = await res.json();
+
+      setAnimate(false);
+      setTimeout(() => {
+        setSite(extractScores(data));
+        setOverall(data.overall ?? 0);
+        setAnimate(true);
+      }, 50);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const analyzeA = () =>
+    fetchScores(addrA, setScoresA, setOverallA, setErrorA, setLoadingA);
+  const analyzeB = () =>
+    fetchScores(addrB, setScoresB, setOverallB, setErrorB, setLoadingB);
+
+  const analyzeBoth = () => {
+    analyzeA();
+    analyzeB();
+    setReportA(false);
+    setReportB(false);
   };
 
   const repairA = scoresA ? computeRepairCost(scoresA) : 0;
   const repairB = scoresB ? computeRepairCost(scoresB) : 0;
-
-  const overallA = scoresA
-    ? Math.round(
-        Object.values(scoresA).reduce((a, b) => a + b, 0) / DIMENSIONS.length
-      )
-    : 0;
-  const overallB = scoresB
-    ? Math.round(
-        Object.values(scoresB).reduce((a, b) => a + b, 0) / DIMENSIONS.length
-      )
-    : 0;
-  const siteAWins = overallA >= overallB;
+  const siteAWins = (overallA ?? 0) >= (overallB ?? 0);
+  const bothReady = scoresA && scoresB;
 
   return (
     <div
@@ -383,8 +523,9 @@ export default function SiteComparison() {
           label="Site A"
           value={addrA}
           onChange={setAddrA}
-          onAnalyze={analyze}
+          onAnalyze={analyzeA}
           color="#3b82f6"
+          loading={loadingA}
         />
         <div
           style={{ display: "flex", alignItems: "flex-end", paddingBottom: 2 }}
@@ -397,14 +538,15 @@ export default function SiteComparison() {
           label="Site B"
           value={addrB}
           onChange={setAddrB}
-          onAnalyze={analyze}
+          onAnalyze={analyzeB}
           color="#a78bfa"
+          loading={loadingB}
         />
         <div
           style={{ display: "flex", alignItems: "flex-end", paddingBottom: 2 }}
         >
           <button
-            onClick={analyze}
+            onClick={analyzeBoth}
             style={{
               background: "#1d4ed8",
               border: "none",
@@ -422,29 +564,33 @@ export default function SiteComparison() {
         </div>
       </div>
 
-      {analyzed && scoresA && scoresB && (
-        <>
-          {/* Site summary cards */}
-          <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-            <SiteCard
-              label="Site A"
-              address={addrA}
-              scores={scoresA}
-              repairCost={repairA}
-              isWinner={siteAWins}
-              color="#3b82f6"
-            />
-            <SiteCard
-              label="Site B"
-              address={addrB}
-              scores={scoresB}
-              repairCost={repairB}
-              isWinner={!siteAWins}
-              color="#a78bfa"
-            />
-          </div>
+      {/* Site summary cards */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+        <SiteCard
+          label="Site A"
+          address={addrA || "—"}
+          scores={scoresA}
+          repairCost={repairA}
+          overallScore={overallA}
+          isWinner={bothReady && siteAWins}
+          color="#3b82f6"
+          error={errorA}
+        />
+        <SiteCard
+          label="Site B"
+          address={addrB || "—"}
+          scores={scoresB}
+          repairCost={repairB}
+          overallScore={overallB}
+          isWinner={bothReady && !siteAWins}
+          color="#a78bfa"
+          error={errorB}
+        />
+      </div>
 
-          {/* Dimension breakdown */}
+      {/* Dimension breakdown */}
+      {bothReady && (
+        <>
           <div
             style={{
               background: "#1e293b",
@@ -518,7 +664,6 @@ export default function SiteComparison() {
                         : "none",
                   }}
                 >
-                  {/* Category label row */}
                   <div
                     style={{
                       display: "flex",
@@ -546,8 +691,6 @@ export default function SiteComparison() {
                       </span>
                     )}
                   </div>
-
-                  {/* Site A bar */}
                   <div
                     style={{
                       display: "flex",
@@ -582,8 +725,6 @@ export default function SiteComparison() {
                     {aWins && <WinnerChip />}
                     {!aWins && <DeltaBadge delta={delta} />}
                   </div>
-
-                  {/* Site B bar */}
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 12 }}
                   >
@@ -620,7 +761,6 @@ export default function SiteComparison() {
 
           {/* Add to report buttons */}
           <div style={{ display: "flex", gap: 16 }}>
-            {/* Site A report */}
             <div
               style={{
                 flex: 1,
@@ -670,39 +810,10 @@ export default function SiteComparison() {
                   transition: "all 0.2s",
                 }}
               >
-                {reportA ? (
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                    >
-                      <path d="M20 6L9 17l-5-5" />
-                    </svg>
-                    Added to report
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path d="M12 5v14M5 12h14" />
-                    </svg>
-                    Add to report
-                  </>
-                )}
+                {reportA ? <>✓ Added to report</> : <>+ Add to report</>}
               </button>
             </div>
 
-            {/* Site B report */}
             <div
               style={{
                 flex: 1,
@@ -752,40 +863,12 @@ export default function SiteComparison() {
                   transition: "all 0.2s",
                 }}
               >
-                {reportB ? (
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                    >
-                      <path d="M20 6L9 17l-5-5" />
-                    </svg>
-                    Added to report
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path d="M12 5v14M5 12h14" />
-                    </svg>
-                    Add to report
-                  </>
-                )}
+                {reportB ? <>✓ Added to report</> : <>+ Add to report</>}
               </button>
             </div>
           </div>
 
-          {/* Repair cost delta callout */}
+          {/* Negotiation insight */}
           {repairA !== repairB && (
             <div
               style={{
