@@ -458,6 +458,7 @@ export default function RouteMap() {
   const [error, setError] = useState(null);
   const [hoveredSegment, setHoveredSegment] = useState(null);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [amenities, setAmenities] = useState(null);  // nearest hospital/pharmacy/transit
 
   // --- init map ---------------------------------------------------------
   useEffect(() => {
@@ -525,6 +526,28 @@ export default function RouteMap() {
     };
   }, [origin, destination]);
 
+  // --- fetch nearby amenities (hospital/pharmacy/transit) for the origin ---
+  useEffect(() => {
+    if (!origin) {
+      setAmenities(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`${API_BASE}/api/nearby`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: origin.lat, lng: origin.lng }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d) setAmenities(d.amenities);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [origin]);
+
   // --- markers -------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
@@ -550,22 +573,57 @@ export default function RouteMap() {
         .addTo(map);
     };
 
+    // Emoji pin + popup for a nearby amenity (hospital/pharmacy/transit).
+    const AMENITY_STYLE = {
+      hospital: { emoji: "🏥", label: "Hospital" },
+      pharmacy: { emoji: "💊", label: "Pharmacy" },
+      transit: { emoji: "🚏", label: "Transit" },
+    };
+    const placeAmenity = (key, a) => {
+      if (markersRef.current[key]) {
+        markersRef.current[key].remove();
+        markersRef.current[key] = null;
+      }
+      if (!a) return;
+      const s = AMENITY_STYLE[key];
+      const el = document.createElement("div");
+      el.style.cssText =
+        "font-size:24px;cursor:pointer;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7));";
+      el.textContent = s.emoji;
+      const popup = new window.mapboxgl.Popup({ offset: 16 }).setHTML(
+        `<div style="font-size:12px;color:#0f172a;font-family:sans-serif">
+           <b>${a.name}</b><br/>${s.label} · ${a.distance_km} km away</div>`
+      );
+      markersRef.current[key] = new window.mapboxgl.Marker(el)
+        .setLngLat([a.lng, a.lat])
+        .setPopup(popup)
+        .addTo(map);
+    };
+
     placeMarker("origin", origin, "#3b82f6");
     placeMarker("destination", destination, "#ef4444");
 
-    if (origin && destination) {
+    ["hospital", "pharmacy", "transit"].forEach((k) =>
+      placeAmenity(k, amenities ? amenities[k] : null)
+    );
+
+    const anchor = origin || destination;
+    if (anchor) {
       const bounds = new window.mapboxgl.LngLatBounds(
-        [origin.lng, origin.lat],
-        [origin.lng, origin.lat]
+        [anchor.lng, anchor.lat],
+        [anchor.lng, anchor.lat]
       );
-      bounds.extend([destination.lng, destination.lat]);
-      map.fitBounds(bounds, { padding: 80, duration: 800 });
-    } else if (origin) {
-      map.flyTo({ center: [origin.lng, origin.lat], zoom: 15, duration: 800 });
-    } else if (destination) {
-      map.flyTo({ center: [destination.lng, destination.lat], zoom: 15, duration: 800 });
+      if (origin) bounds.extend([origin.lng, origin.lat]);
+      if (destination) bounds.extend([destination.lng, destination.lat]);
+      // include amenity markers so the nearby hospital/pharmacy/transit show
+      if (amenities) {
+        ["hospital", "pharmacy", "transit"].forEach((k) => {
+          if (amenities[k]) bounds.extend([amenities[k].lng, amenities[k].lat]);
+        });
+      }
+      map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 800 });
     }
-  }, [origin, destination, mapLoaded]);
+  }, [origin, destination, mapLoaded, amenities]);
 
   // --- route segments layer ----------------------------------------
   useEffect(() => {
