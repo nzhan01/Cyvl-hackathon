@@ -20,7 +20,17 @@ import requests
 APS_BASE      = "https://developer.api.autodesk.com"
 APS_CLIENT_ID     = os.getenv("APS_CLIENT_ID", "")
 APS_CLIENT_SECRET = os.getenv("APS_CLIENT_SECRET", "")
-BUCKET_KEY    = os.getenv("APS_BUCKET_KEY", "walkability-tool-bucket")
+
+
+def _default_bucket_key() -> str:
+    # APS bucket keys are GLOBALLY unique across all apps and must be lowercase.
+    # Derive from the client id so this app always owns its own bucket without
+    # colliding with another team's "walkability-tool-bucket".
+    cid = "".join(c for c in APS_CLIENT_ID.lower() if c.isalnum())[:24]
+    return f"cyvl-walkability-{cid}" if cid else "cyvl-walkability-bucket"
+
+
+BUCKET_KEY    = os.getenv("APS_BUCKET_KEY", _default_bucket_key())
 
 _UA = "cyvl-hackathon-poc/1.0"
 
@@ -75,23 +85,39 @@ def ensure_bucket(token: str) -> None:
 
 
 def upload_obj(filename: str, file_bytes: bytes) -> str:
-    """Upload raw bytes to OSS and return the base64-encoded URN."""
+    """Upload raw bytes to OSS via the signed-S3 flow, return the URL-safe URN.
+
+    The legacy direct PUT (/objects/{name}) is deprecated by APS; uploads now
+    go through signed S3: (1) request a signed URL, (2) PUT bytes to S3,
+    (3) finalize the upload.
+    """
     token = get_token()
     ensure_bucket(token)
+    base = f"{APS_BASE}/oss/v2/buckets/{BUCKET_KEY}/objects/{filename}/signeds3upload"
+    hdr = {"Authorization": f"Bearer {token}", "User-Agent": _UA}
 
-    r = requests.put(
-        f"{APS_BASE}/oss/v2/buckets/{BUCKET_KEY}/objects/{filename}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "User-Agent": _UA,
-            "Content-Type": "application/octet-stream",
-        },
-        data=file_bytes,
-        timeout=60,
+    # 1. Get a signed S3 upload URL
+    s = requests.get(base, headers=hdr, timeout=30)
+    s.raise_for_status()
+    sj = s.json()
+    upload_key = sj["uploadKey"]
+    signed_url = sj["urls"][0]
+
+    # 2. PUT the bytes straight to S3 (presigned URL — no auth header)
+    put = requests.put(signed_url, data=file_bytes, timeout=120)
+    put.raise_for_status()
+
+    # 3. Finalize / commit the upload
+    done = requests.post(
+        base,
+        headers={**hdr, "Content-Type": "application/json"},
+        json={"uploadKey": upload_key},
+        timeout=30,
     )
-    r.raise_for_status()
-    object_id = r.json()["objectId"]
-    return base64.b64encode(object_id.encode()).decode()
+    done.raise_for_status()
+    object_id = done.json()["objectId"]
+    # Model Derivative expects URL-safe base64 without padding.
+    return base64.urlsafe_b64encode(object_id.encode()).decode().rstrip("=")
 
 
 def translate(urn: str) -> str:
