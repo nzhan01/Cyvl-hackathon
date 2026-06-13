@@ -27,6 +27,7 @@ import cyvl_client
 import features
 import geo
 import llm
+import generate_model
 import scoring
 from models import validator
 
@@ -54,6 +55,10 @@ class AddressIn(BaseModel):
     lat: float | None = None
     lng: float | None = None
 
+class GenerateModelIn(BaseModel):
+    lat: float
+    lng: float
+    address: str
 class RouteIn(BaseModel):
     origin: str
     dest: str
@@ -219,3 +224,14 @@ def aps_status(urn: str):
         raise HTTPException(500, str(e))
     except Exception as e:
         raise HTTPException(502, f"APS status check failed: {e}")
+    
+@app.post("/api/aps/generate-model")
+def aps_generate_model(body: GenerateModelIn):
+    """Pull Cyvl data, build OBJ, upload to APS, trigger translation. Returns URN."""
+    try:
+        urn = generate_model.generate_and_upload(body.lat, body.lng, body.address)
+        return {"urn": urn}
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Model generation failed: {e}")
