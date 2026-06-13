@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
+const MAPBOX_TOKEN = process.env.REACT_APP_MAPBOX_TOKEN;
 
 const SCORE_CATEGORIES = [
   { key: "navigation", label: "Navigation", icon: "🧭", score: 72 },
