@@ -8,6 +8,7 @@ import RouteMap from "./Screen2/RouteMap";
 const TABS = [
   { key: "walkability", label: "Walkability", component: WalkabilityMap },
   { key: "route", label: "Route", component: RouteMap },
+  { key: "comparison", label: "Compare sites", component: SiteComparison },
 ];
 
 function App() {
@@ -50,10 +51,18 @@ function App() {
           </button>
         ))}
       </div>
-      <div style={{ position: "fixed", top: 40, left: 0, right: 0, bottom: 0, overflow: "hidden" }}>
+      <div
+        style={{
+          position: "fixed",
+          top: 40,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          overflow: activeTab === "comparison" ? "auto" : "hidden",
+        }}
+      >
         <ActiveComponent />
       </div>
-      {/* <SiteComparison /> */}
     </div>
   );
 }
