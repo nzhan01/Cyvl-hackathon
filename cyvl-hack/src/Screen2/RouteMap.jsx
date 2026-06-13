@@ -94,18 +94,24 @@ function generateMockRoute(origin, destination) {
 // }
 // ---------------------------------------------------------------------------
 async function fetchRouteAssessment(origin, destination) {
-  // TODO(backend): replace the mock below with the real call, e.g.
-  //
-  // const res = await fetch(`${API_BASE}/api/route`, {
-  //   method: "POST",
-  //   headers: { "Content-Type": "application/json" },
-  //   body: JSON.stringify({ origin: origin.address, dest: destination.address }),
-  // });
-  // if (!res.ok) throw new Error(`Route request failed: ${res.status}`);
-  // return res.json();
-
-  await new Promise((r) => setTimeout(r, 600));
-  return generateMockRoute(origin, destination);
+  // Real backend call (POST /api/route). Send exact lat,lng from Mapbox so the
+  // backend doesn't re-geocode. Falls back to mock if the backend is down so
+  // the demo never breaks.
+  try {
+    const res = await fetch(`${API_BASE}/api/route`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        origin: `${origin.lat},${origin.lng}`,
+        dest: `${destination.lat},${destination.lng}`,
+      }),
+    });
+    if (!res.ok) throw new Error(`Route request failed: ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    console.warn("Backend /api/route unavailable, using mock:", e);
+    return generateMockRoute(origin, destination);
+  }
 }
 
 function routeToGeoJSON(routeData) {
