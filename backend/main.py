@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 import aps
 import cyvl_client
+import directions
 import features
 import geo
 import llm
@@ -62,6 +63,10 @@ class GenerateModelIn(BaseModel):
 class RouteIn(BaseModel):
     origin: str
     dest: str
+
+class DirectionsIn(BaseModel):
+    origin: str
+    destination: str
 
 class ApsUploadIn(BaseModel):
     filename: str
@@ -171,6 +176,24 @@ def route(body: RouteIn):
         "total_repair_cost": total_repair,
         "segments": segments,
     }
+
+
+@app.post("/api/directions")
+def directions_route(body: DirectionsIn):
+    """Google walking directions -> per-street segments enriched with Cyvl data.
+
+    Each segment carries an encoded polyline (frontend decodes with
+    @mapbox/polyline) + an "infrastructure" summary. Needs GOOGLE_MAPS_KEY.
+    """
+    try:
+        segments = directions.enrich(body.origin, body.destination)
+    except RuntimeError as e:           # key missing
+        raise HTTPException(503, str(e))
+    except ValueError as e:             # Directions API status != OK
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Directions failed: {e}")
+    return {"segments": segments}
 
 
 @app.post("/api/report")

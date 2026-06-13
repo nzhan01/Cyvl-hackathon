@@ -276,3 +276,25 @@ def pavement_detail_along_route(coords: list[tuple[float, float]]) -> list[dict]
 def pavement_along_route(coords: list[tuple[float, float]]) -> list[float]:
     """Per-point pavement score for a route polyline (scores only)."""
     return [d["score"] for d in pavement_detail_along_route(coords)]
+
+
+def segment_infrastructure(lat: float, lng: float, radius_m: float = 40) -> dict:
+    """Cyvl pavement/distress/sign summary near a point (for /api/directions)."""
+    if not CYVL_LIVE:
+        s = _mock_seed(lat, lng)
+        return {"pavement_score": round(55 + s * 40, 1),
+                "distress_count": int(s * 5), "signs": []}
+
+    base = {"project_id": PROJECT_ID, "radius_lat": lat, "radius_lng": lng,
+            "radius_meters": radius_m, "limit": 100}
+    pav = _features(_get("/api/v1/pavement/scores", base))
+    scores = [v for v in (_extract_score(f) for f in pav) if v is not None]
+    distresses = _features(_get("/api/v1/pavement/distresses", base))
+    signs = _features(_get("/api/v1/signs", base))
+    sign_list = [_prop(f, "mutcd_code", "code", "Type", "asset_type", default="sign")
+                 for f in signs[:10]]
+    return {
+        "pavement_score": round(sum(scores) / len(scores), 1) if scores else None,
+        "distress_count": len(distresses),
+        "signs": sign_list,
+    }
