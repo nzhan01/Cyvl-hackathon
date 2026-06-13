@@ -61,7 +61,12 @@ def parse_steps(steps: list[dict]) -> list[dict]:
 def cyvl_radius_for_segment(seg: dict) -> dict:
     mid_lat = (seg["start"]["lat"] + seg["end"]["lat"]) / 2
     mid_lng = (seg["start"]["lng"] + seg["end"]["lng"]) / 2
-    radius_m = max(seg["distance_m"] / 2 + 20, 30)  # buffer; min 30m
+    # Google splits walking routes into short (30-80m) steps, so the midpoint
+    # radius often hits its floor. 30m was too tight for Cyvl's density here and
+    # returned 0 features on most segments; 75m reliably catches the street's
+    # data (verified against the live API). Cap at 150m so a very long single
+    # step doesn't sweep in parallel/adjacent streets.
+    radius_m = min(max(seg["distance_m"] / 2 + 20, 75), 150)
     return {"lat": mid_lat, "lng": mid_lng, "meters": radius_m}
 
 
