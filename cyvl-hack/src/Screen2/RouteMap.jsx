@@ -106,6 +106,7 @@ function directionsToRouteData(rawSegments) {
         to: coords[coords.length - 1],
         street_name: seg.street_name,
         pavement_score: Math.round(pavement_score),
+        has_pavement_data: seg.infrastructure?.pavement_score != null,
         band: bandFromScore(pavement_score),
         length_ft: Math.round(length_ft),
         repair_cost,
@@ -315,7 +316,26 @@ function AddressInput({ label, placeholder, value, onChangeText, onSelect, dotCo
 // ---------------------------------------------------------------------------
 // Side panel pieces
 // ---------------------------------------------------------------------------
-function ScoreBadge({ score, band }) {
+function ScoreBadge({ score, band, noData }) {
+  if (noData) {
+    return (
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: "#64748b",
+          background: "rgba(255,255,255,0.04)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 6,
+          padding: "2px 8px",
+          minWidth: 36,
+          textAlign: "center",
+        }}
+      >
+        —
+      </span>
+    );
+  }
   const c = BAND_COLORS[band];
   return (
     <span
@@ -336,8 +356,38 @@ function ScoreBadge({ score, band }) {
   );
 }
 
+function InfraTag({ icon, label, tone }) {
+  const toneColors = {
+    neutral: { color: "#64748b", bg: "rgba(255,255,255,0.04)", border: "rgba(255,255,255,0.08)" },
+    warn: { color: "#d97706", bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.2)" },
+  };
+  const c = toneColors[tone] || toneColors.neutral;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontSize: 11,
+        color: c.color,
+        background: c.bg,
+        border: `1px solid ${c.border}`,
+        borderRadius: 5,
+        padding: "2px 6px",
+      }}
+    >
+      {icon} {label}
+    </span>
+  );
+}
+
 function SegmentRow({ segment, isHovered, onHover }) {
   const c = BAND_COLORS[segment.band];
+  const signCounts = segment.signs.reduce((acc, s) => {
+    acc[s] = (acc[s] || 0) + 1;
+    return acc;
+  }, {});
+
   return (
     <div
       onMouseEnter={() => onHover(segment.id)}
@@ -353,7 +403,7 @@ function SegmentRow({ segment, isHovered, onHover }) {
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
         <span style={{ fontSize: 13, fontWeight: 500, color: "#cbd5e1" }}>{segment.street_name}</span>
-        <ScoreBadge score={segment.pavement_score} band={segment.band} />
+        <ScoreBadge score={segment.pavement_score} band={segment.band} noData={!segment.has_pavement_data} />
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#64748b" }}>
         <span>{segment.length_ft} ft</span>
@@ -364,6 +414,28 @@ function SegmentRow({ segment, isHovered, onHover }) {
           </span>
         </span>
       </div>
+      {(segment.distress_count > 0 || segment.signs.length > 0 || !segment.has_pavement_data) && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          {!segment.has_pavement_data && (
+            <InfraTag icon="—" label="No pavement data" tone="neutral" />
+          )}
+          {segment.distress_count > 0 && (
+            <InfraTag
+              icon="⚠"
+              label={`${segment.distress_count} distress${segment.distress_count === 1 ? "" : "es"}`}
+              tone="warn"
+            />
+          )}
+          {Object.entries(signCounts).map(([type, count]) => (
+            <InfraTag
+              key={type}
+              icon="🪧"
+              label={count > 1 ? `${type} ×${count}` : type}
+              tone="neutral"
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

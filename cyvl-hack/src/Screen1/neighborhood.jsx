@@ -6,12 +6,48 @@ const APS_VIEWER_VERSION = "7.*";
 
 // Metadata only — scores come live from the backend (no mock values).
 const SCORE_CATEGORIES = [
-  { key: "navigation", label: "Navigation", icon: "🧭" },
-  { key: "healthcare", label: "Healthcare", icon: "🏥" },
-  { key: "outdoor_safety", label: "Outdoor safety", icon: "🛡️" },
-  { key: "emergency", label: "Emergency", icon: "🚨" },
-  { key: "social_connection", label: "Social connection", icon: "🤝" },
-  { key: "displacement_risk", label: "Displacement risk", icon: "⚠️" },
+  {
+    key: "navigation",
+    label: "Navigation",
+    icon: "🧭",
+    description:
+      "How easy it is to find your way around — sidewalk continuity, signage, and intersection clarity along nearby routes.",
+  },
+  {
+    key: "healthcare",
+    label: "Healthcare",
+    icon: "🏥",
+    description:
+      "Proximity and accessibility of healthcare facilities such as hospitals, clinics, and pharmacies.",
+  },
+  {
+    key: "outdoor_safety",
+    label: "Outdoor safety",
+    icon: "🛡️",
+    description:
+      "Condition of sidewalks, crossings, lighting, and other infrastructure that affects safety while walking outdoors.",
+  },
+  {
+    key: "emergency",
+    label: "Emergency",
+    icon: "🚨",
+    description:
+      "How quickly emergency services (fire, police, EMS) can reach this location based on proximity and road access.",
+  },
+  {
+    key: "social_connection",
+    label: "Social connection",
+    icon: "🤝",
+    description:
+      "Access to community spaces, parks, and gathering points that support social interaction for residents.",
+  },
+  {
+    key: "displacement_risk",
+    label: "Displacement risk",
+    icon: "⚠️",
+    description:
+      "Likelihood of residents being displaced due to rising costs or development pressure in the surrounding area.",
+  },
 ];
 
 function ScoreBar({ score }) {
@@ -479,10 +515,17 @@ function APSViewerPanel({ site, onClose }) {
 }
 
 // ── Main Component ────────────────────────────────────────────────────────────
+const AMENITY_TYPES = {
+  hospital: { icon: "🏥", color: "#ef4444", label: "Hospital" },
+  pharmacy: { icon: "💊", color: "#22c55e", label: "Pharmacy / Grocery" },
+  transit: { icon: "🚌", color: "#3b82f6", label: "Transit stop" },
+};
+
 export default function WalkabilityMap() {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
   const markerRef = useRef(null);
+  const amenityMarkersRef = useRef([]);
   const [address, setAddress] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [selectedSite, setSelectedSite] = useState(null);
@@ -492,6 +535,7 @@ export default function WalkabilityMap() {
   const [overallScore, setOverallScore] = useState(null);
   const [validation, setValidation] = useState(null);
   const [issues, setIssues] = useState([]);
+  const [amenities, setAmenities] = useState(null);
   const [error, setError] = useState(null);
   const [showAPS, setShowAPS] = useState(false);
 
@@ -501,6 +545,7 @@ export default function WalkabilityMap() {
     setOverallScore(null);
     setValidation(null);
     setIssues([]);
+    setAmenities(null);
     setError(null);
     setShowAPS(false);
   };
@@ -612,10 +657,54 @@ export default function WalkabilityMap() {
         setOverallScore(d.overall);
         setValidation(d.validation);
         setIssues(d.issues || []);
+        setAmenities(d.amenities || null);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
+
+  // Plot a marker for each tracked amenity (hospital, pharmacy/grocery, transit).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+
+    amenityMarkersRef.current.forEach((m) => m.remove());
+    amenityMarkersRef.current = [];
+
+    if (!amenities) return;
+
+    Object.entries(amenities).forEach(([type, info]) => {
+      if (!info?.lat || !info?.lng) return;
+      const config = AMENITY_TYPES[type] || { icon: "📍", color: "#94a3b8", label: type };
+
+      const el = document.createElement("div");
+      el.style.cssText = `
+        width: 28px; height: 28px;
+        display: flex; align-items: center; justify-content: center;
+        background: ${config.color};
+        border: 2px solid #fff;
+        border-radius: 50%;
+        font-size: 14px;
+        box-shadow: 0 0 0 3px ${config.color}4D;
+      `;
+      el.textContent = config.icon;
+
+      const popup = new window.mapboxgl.Popup({ offset: 16, closeButton: false }).setHTML(
+        `<div style="font-family: -apple-system, sans-serif; font-size: 12px;">
+          <strong>${config.label}</strong><br/>
+          ${info.name || "Unknown"}<br/>
+          ${info.distance_km != null ? `${info.distance_km.toFixed(2)} km away` : ""}
+        </div>`
+      );
+
+      const marker = new window.mapboxgl.Marker(el)
+        .setLngLat([info.lng, info.lat])
+        .setPopup(popup)
+        .addTo(map);
+
+      amenityMarkersRef.current.push(marker);
+    });
+  }, [amenities, mapLoaded]);
 
   return (
     <div
@@ -1033,6 +1122,16 @@ export default function WalkabilityMap() {
                     <ScoreBadge score={scores[cat.key]} />
                   </div>
                   <ScoreBar score={scores[cat.key]} />
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 11,
+                      color: "#64748b",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {cat.description}
+                  </div>
                 </div>
               ))}
             </div>
