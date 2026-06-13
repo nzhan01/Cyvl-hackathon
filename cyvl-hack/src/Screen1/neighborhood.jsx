@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 
 const MAPBOX_TOKEN = process.env.REACT_APP_MAPBOX_TOKEN;
-const API_BASE = process.env.REACT_APP_API_BASE_URL || "http://localhost:8000";
+const API_BASE = "https://cyvl-hackathon.onrender.com";
+const APS_VIEWER_VERSION = "7.*";
 
 // Metadata only — scores come live from the backend (no mock values).
 const SCORE_CATEGORIES = [
@@ -63,7 +64,6 @@ function OverallScore({ score }) {
   const circumference = 2 * Math.PI * 36;
   const offset = circumference - (score / 100) * circumference;
   const color = score >= 75 ? "#22c55e" : score >= 50 ? "#f59e0b" : "#ef4444";
-
   return (
     <div style={{ position: "relative", width: 88, height: 88 }}>
       <svg width="88" height="88" style={{ transform: "rotate(-90deg)" }}>
@@ -116,6 +116,367 @@ function OverallScore({ score }) {
   );
 }
 
+// ── APS Viewer Panel ──────────────────────────────────────────────────────────
+function APSViewerPanel({ site, onClose }) {
+  const viewerContainer = useRef(null);
+  const viewerRef = useRef(null);
+  const [status, setStatus] = useState("loading");
+  const [statusMsg, setStatusMsg] = useState("Connecting to Autodesk...");
+
+  const loadViewerSDK = () =>
+    new Promise((resolve) => {
+      if (window.Autodesk?.Viewing) {
+        resolve();
+        return;
+      }
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = `https://developer.api.autodesk.com/modelderivative/v2/viewers/${APS_VIEWER_VERSION}/style.min.css`;
+      document.head.appendChild(link);
+      const script = document.createElement("script");
+      script.src = `https://developer.api.autodesk.com/modelderivative/v2/viewers/${APS_VIEWER_VERSION}/viewer3D.min.js`;
+      script.onload = resolve;
+      document.head.appendChild(script);
+    });
+
+  const pollStatus = async (urn) => {
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const res = await fetch(
+        `${API_BASE}/api/aps/status/${encodeURIComponent(urn)}`
+      );
+      const data = await res.json();
+      setStatusMsg(`Translating 3D model... ${data.progress || ""}`);
+      if (data.status === "success") return true;
+      if (data.status === "failed") throw new Error("Model translation failed");
+    }
+    throw new Error("Translation timed out");
+  };
+
+  const loadModel = (viewer, urn, token) =>
+    new Promise((resolve, reject) => {
+      window.Autodesk.Viewing.Document.load(
+        `urn:${urn}`,
+        (doc) => {
+          const node = doc.getRoot().getDefaultGeometry();
+          viewer.loadDocumentNode(doc, node).then(resolve).catch(reject);
+        },
+        (err) => reject(new Error(`Document load failed: ${err}`))
+      );
+    });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!site?.lat || !site?.lng || !site?.address) {
+        setStatus("error");
+        setStatusMsg("No site selected — please select an address first.");
+        return;
+      }
+      try {
+        // Step 1 — Get APS token
+        setStatusMsg("Authenticating with Autodesk...");
+        const tokenRes = await fetch(`${API_BASE}/api/aps/token`, {
+          method: "POST",
+        });
+        if (!tokenRes.ok) throw new Error("aps_credentials");
+        const { access_token } = await tokenRes.json();
+        if (cancelled) return;
+
+        // Step 2 — Load viewer SDK
+        setStatusMsg("Loading 3D viewer SDK...");
+        await loadViewerSDK();
+        if (cancelled) return;
+
+        // Step 3 — Initialize viewer
+        setStatusMsg("Initializing viewer...");
+        await new Promise((resolve, reject) => {
+          window.Autodesk.Viewing.Initializer(
+            { env: "AutodeskProduction", accessToken: access_token },
+            () => resolve(),
+            (err) => reject(err)
+          );
+        });
+        if (cancelled) return;
+
+        const viewer = new window.Autodesk.Viewing.GuiViewer3D(
+          viewerContainer.current,
+          { extensions: ["Autodesk.DefaultTools.NavTools"] }
+        );
+        viewer.start();
+        viewerRef.current = viewer;
+
+        // Step 4 — Generate model from Cyvl data
+        setStatusMsg("Generating 3D model from Cyvl street data...");
+        const genRes = await fetch(`${API_BASE}/api/aps/generate-model`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lat: site.lat,
+            lng: site.lng,
+            address: site.address,
+          }),
+        });
+        if (!genRes.ok) throw new Error("Model generation failed");
+        const { urn } = await genRes.json();
+        if (cancelled) return;
+
+        // Step 5 — Poll until translation complete
+        setStatusMsg("Translating model for 3D viewer...");
+        await pollStatus(urn);
+        if (cancelled) return;
+
+        // Step 6 — Load model into viewer
+        setStatusMsg("Loading 3D scene...");
+        await loadModel(viewer, urn, access_token);
+        if (cancelled) return;
+
+        setStatus("ready");
+        setStatusMsg("");
+      } catch (err) {
+        if (cancelled) return;
+        console.error("APS pipeline error:", err);
+        if (err.message === "aps_credentials" || err.message?.includes("401")) {
+          setStatus("no_credentials");
+        } else {
+          setStatus("error");
+          setStatusMsg(err.message || "Pipeline failed");
+        }
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+      if (viewerRef.current) {
+        viewerRef.current.finish();
+        viewerRef.current = null;
+      }
+    };
+  }, []);
+
+  return (
+    <div
+      style={{
+        width: 500,
+        background: "#0f172a",
+        borderLeft: "1px solid rgba(255,255,255,0.08)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          padding: "16px 20px",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "#475569",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              marginBottom: 3,
+            }}
+          >
+            Autodesk Platform Services
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#f1f5f9" }}>
+            {site?.address?.split(",")[0] || "3D Street View"}
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 6,
+            color: "#94a3b8",
+            cursor: "pointer",
+            padding: "6px 12px",
+            fontSize: 13,
+          }}
+        >
+          ✕ Close
+        </button>
+      </div>
+
+      {/* Viewer */}
+      <div style={{ flex: 1, position: "relative", minHeight: 400 }}>
+        <div ref={viewerContainer} style={{ width: "100%", height: "100%" }} />
+
+        {status !== "ready" && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "#0f172a",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 32,
+              textAlign: "center",
+              gap: 16,
+            }}
+          >
+            {status === "loading" && (
+              <>
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    border: "3px solid rgba(255,255,255,0.1)",
+                    borderTopColor: "#3b82f6",
+                    borderRadius: "50%",
+                    animation: "aps-spin 0.8s linear infinite",
+                  }}
+                />
+                <style>{`@keyframes aps-spin { to { transform: rotate(360deg); } }`}</style>
+                <div style={{ fontSize: 13, color: "#64748b" }}>
+                  {statusMsg}
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#334155",
+                    maxWidth: 280,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  Pulling Cyvl street data → building 3D geometry → uploading to
+                  Autodesk
+                </div>
+              </>
+            )}
+            {status === "no_credentials" && (
+              <>
+                <div style={{ fontSize: 40 }}>🏗️</div>
+                <div
+                  style={{ fontSize: 15, fontWeight: 600, color: "#94a3b8" }}
+                >
+                  Autodesk 3D Viewer
+                </div>
+                <div
+                  style={{ fontSize: 12, color: "#475569", lineHeight: 1.7 }}
+                >
+                  APS credentials are not configured yet.
+                </div>
+                <div
+                  style={{
+                    background: "rgba(59,130,246,0.08)",
+                    border: "1px solid rgba(59,130,246,0.2)",
+                    borderRadius: 10,
+                    padding: "14px 18px",
+                    fontSize: 12,
+                    color: "#93c5fd",
+                    lineHeight: 1.9,
+                    textAlign: "left",
+                    maxWidth: 340,
+                  }}
+                >
+                  <strong style={{ color: "#bfdbfe" }}>To enable:</strong>
+                  <br />
+                  1. Sign up at aps.autodesk.com
+                  <br />
+                  2. Create an app → copy Client ID + Secret
+                  <br />
+                  3. Add to Render environment variables:
+                  <br />
+                  &nbsp;&nbsp;&nbsp;APS_CLIENT_ID=...
+                  <br />
+                  &nbsp;&nbsp;&nbsp;APS_CLIENT_SECRET=...
+                  <br />
+                  4. Redeploy the backend
+                </div>
+              </>
+            )}
+            {status === "error" && (
+              <>
+                <div style={{ fontSize: 36 }}>⚠️</div>
+                <div
+                  style={{ fontSize: 14, fontWeight: 600, color: "#ef4444" }}
+                >
+                  Pipeline error
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#475569",
+                    lineHeight: 1.6,
+                    maxWidth: 300,
+                  }}
+                >
+                  {statusMsg}
+                </div>
+                <button
+                  onClick={() => {
+                    setStatus("loading");
+                    setStatusMsg("Retrying...");
+                  }}
+                  style={{
+                    background: "#1d4ed8",
+                    border: "none",
+                    borderRadius: 7,
+                    color: "#fff",
+                    fontSize: 13,
+                    padding: "9px 20px",
+                    cursor: "pointer",
+                  }}
+                >
+                  Retry
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div
+        style={{
+          padding: "10px 20px",
+          borderTop: "1px solid rgba(255,255,255,0.06)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background:
+              status === "ready"
+                ? "#22c55e"
+                : status === "error"
+                ? "#ef4444"
+                : "#f59e0b",
+          }}
+        />
+        <span style={{ fontSize: 11, color: "#475569" }}>
+          {status === "ready"
+            ? "3D model loaded — Cyvl + Autodesk"
+            : status === "error"
+            ? "Pipeline failed"
+            : status === "no_credentials"
+            ? "Waiting for APS credentials"
+            : statusMsg}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
 export default function WalkabilityMap() {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
@@ -125,11 +486,12 @@ export default function WalkabilityMap() {
   const [selectedSite, setSelectedSite] = useState(null);
   const [loading, setLoading] = useState(false);
   const [mapLoaded, setMapLoaded] = useState(false);
-  const [scores, setScores] = useState(null);       // live dimensions from backend
+  const [scores, setScores] = useState(null);
   const [overallScore, setOverallScore] = useState(null);
   const [validation, setValidation] = useState(null);
   const [issues, setIssues] = useState([]);
   const [error, setError] = useState(null);
+  const [showAPS, setShowAPS] = useState(false);
 
   const resetAssessment = () => {
     setSelectedSite(null);
@@ -138,15 +500,14 @@ export default function WalkabilityMap() {
     setValidation(null);
     setIssues([]);
     setError(null);
+    setShowAPS(false);
   };
 
   useEffect(() => {
     if (mapRef.current || !mapContainer.current) return;
-
     const initMap = () => {
       if (!window.mapboxgl) return;
       window.mapboxgl.accessToken = MAPBOX_TOKEN;
-
       const map = new window.mapboxgl.Map({
         container: mapContainer.current,
         style: "mapbox://styles/mapbox/dark-v11",
@@ -155,9 +516,7 @@ export default function WalkabilityMap() {
         pitch: 45,
         bearing: -10,
       });
-
       map.addControl(new window.mapboxgl.NavigationControl(), "top-right");
-
       map.on("load", () => {
         map.addLayer({
           id: "3d-buildings",
@@ -175,7 +534,6 @@ export default function WalkabilityMap() {
         });
         setMapLoaded(true);
       });
-
       mapRef.current = map;
     };
 
@@ -186,7 +544,6 @@ export default function WalkabilityMap() {
       script.src = "https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.js";
       script.onload = initMap;
       document.head.appendChild(script);
-
       const link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = "https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.css";
@@ -226,18 +583,9 @@ export default function WalkabilityMap() {
         bearing: -15,
         duration: 1800,
       });
-
       if (markerRef.current) markerRef.current.remove();
-
       const el = document.createElement("div");
-      el.style.cssText = `
-        width: 18px; height: 18px;
-        background: #ef4444;
-        border: 3px solid #fff;
-        border-radius: 50%;
-        box-shadow: 0 0 0 4px rgba(239,68,68,0.3);
-      `;
-
+      el.style.cssText = `width: 18px; height: 18px; background: #ef4444; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 4px rgba(239,68,68,0.3);`;
       markerRef.current = new window.mapboxgl.Marker(el)
         .setLngLat([lng, lat])
         .addTo(mapRef.current);
@@ -246,6 +594,7 @@ export default function WalkabilityMap() {
     setSelectedSite({ address: feature.place_name, lng, lat });
     setScores(null);
     setError(null);
+    setShowAPS(false);
 
     fetch(`${API_BASE}/api/score-address`, {
       method: "POST",
@@ -280,7 +629,6 @@ export default function WalkabilityMap() {
       <div style={{ flex: 1, position: "relative" }}>
         <div ref={mapContainer} style={{ width: "100%", height: "100%" }} />
 
-        {/* Address search overlay on map */}
         <div
           style={{
             position: "absolute",
@@ -356,7 +704,6 @@ export default function WalkabilityMap() {
                 </button>
               )}
             </div>
-
             {suggestions.length > 0 && (
               <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
                 {suggestions.map((s) => (
@@ -396,7 +743,6 @@ export default function WalkabilityMap() {
           </div>
         </div>
 
-        {/* Map label */}
         <div
           style={{
             position: "absolute",
@@ -414,7 +760,7 @@ export default function WalkabilityMap() {
         </div>
       </div>
 
-      {/* RIGHT PANEL */}
+      {/* SCORE PANEL */}
       <div
         style={{
           width: 340,
@@ -425,7 +771,6 @@ export default function WalkabilityMap() {
           overflowY: "auto",
         }}
       >
-        {/* Header */}
         <div
           style={{
             padding: "20px 20px 16px",
@@ -539,7 +884,6 @@ export default function WalkabilityMap() {
 
         {selectedSite && !loading && scores && (
           <>
-            {/* Street name + overall score */}
             <div
               style={{
                 padding: "16px 20px",
@@ -572,8 +916,14 @@ export default function WalkabilityMap() {
                 </div>
                 <OverallScore score={overallScore} />
               </div>
-
-              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+              <div
+                style={{
+                  marginTop: 12,
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
+              >
                 <span
                   style={{
                     fontSize: 11,
@@ -616,13 +966,14 @@ export default function WalkabilityMap() {
                     }}
                     title={`Model predicted ${validation.model_predicted}, residual ${validation.residual}`}
                   >
-                    {validation.consistent ? "✓ Model-validated" : "⚠ Check scores"}
+                    {validation.consistent
+                      ? "✓ Model-validated"
+                      : "⚠ Check scores"}
                   </span>
                 )}
               </div>
             </div>
 
-            {/* Score categories */}
             <div style={{ padding: "12px 0" }}>
               <div
                 style={{
@@ -635,7 +986,6 @@ export default function WalkabilityMap() {
               >
                 Route breakdown
               </div>
-
               {SCORE_CATEGORIES.map((cat, i) => (
                 <div
                   key={cat.key}
@@ -717,22 +1067,63 @@ export default function WalkabilityMap() {
               </div>
             )}
 
-            {/* Footer action */}
+            {/* Footer — two buttons */}
             <div
               style={{
                 padding: "16px 20px",
                 borderTop: "1px solid rgba(255,255,255,0.06)",
                 marginTop: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
               }}
             >
+              <button
+                onClick={() => {
+                  if (selectedSite?.lat && selectedSite?.lng) {
+                    setShowAPS(!showAPS);
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  padding: "10px 16px",
+                  background: showAPS ? "rgba(59,130,246,0.15)" : "#1d4ed8",
+                  border: showAPS ? "1px solid rgba(59,130,246,0.4)" : "none",
+                  borderRadius: 8,
+                  color: "#fff",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                }}
+              >
+                <span>
+                  {showAPS ? "✕ Close 3D View" : "🏗️ Open in 3D — Autodesk"}
+                </span>
+                {!showAPS && (
+                  <svg
+                    width="14"
+                    height="14"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M5 12h14M12 5l7 7-7 7" />
+                  </svg>
+                )}
+              </button>
               <button
                 style={{
                   width: "100%",
                   padding: "10px 16px",
-                  background: "#1d4ed8",
-                  border: "none",
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.1)",
                   borderRadius: 8,
-                  color: "#fff",
+                  color: "#94a3b8",
                   fontSize: 13,
                   fontWeight: 500,
                   cursor: "pointer",
@@ -758,6 +1149,11 @@ export default function WalkabilityMap() {
           </>
         )}
       </div>
+
+      {/* APS VIEWER PANEL — slides in when showAPS is true */}
+      {showAPS && (
+        <APSViewerPanel site={selectedSite} onClose={() => setShowAPS(false)} />
+      )}
     </div>
   );
 }
