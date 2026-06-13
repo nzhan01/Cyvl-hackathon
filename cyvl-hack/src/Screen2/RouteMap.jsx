@@ -23,6 +23,19 @@ function bandFromScore(score) {
   return "red";
 }
 
+// Cyvl PCI condition labels (0-100 scale), per Cyvl's pavement scoring reference.
+function pciLabel(score) {
+  if (score >= 91) return "Excellent";
+  if (score >= 86) return "Very Good";
+  if (score >= 81) return "Good";
+  if (score >= 71) return "Satisfactory";
+  if (score >= 56) return "Fair";
+  if (score >= 41) return "Poor";
+  if (score >= 26) return "Very Poor";
+  if (score >= 11) return "Serious";
+  return "Failed";
+}
+
 function formatCost(n) {
   if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
   if (n >= 1000) return `$${Math.round(n / 1000)}K`;
@@ -339,6 +352,7 @@ function ScoreBadge({ score, band, noData }) {
   const c = BAND_COLORS[band];
   return (
     <span
+      title={`Cyvl PCI condition: ${pciLabel(score)} (${score}/100)`}
       style={{
         fontSize: 12,
         fontWeight: 600,
@@ -349,6 +363,7 @@ function ScoreBadge({ score, band, noData }) {
         padding: "2px 8px",
         minWidth: 36,
         textAlign: "center",
+        cursor: "help",
       }}
     >
       {score}
@@ -356,7 +371,7 @@ function ScoreBadge({ score, band, noData }) {
   );
 }
 
-function InfraTag({ icon, label, tone }) {
+function InfraTag({ icon, label, tone, title }) {
   const toneColors = {
     neutral: { color: "#64748b", bg: "rgba(255,255,255,0.04)", border: "rgba(255,255,255,0.08)" },
     warn: { color: "#d97706", bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.2)" },
@@ -364,6 +379,7 @@ function InfraTag({ icon, label, tone }) {
   const c = toneColors[tone] || toneColors.neutral;
   return (
     <span
+      title={title}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -374,6 +390,7 @@ function InfraTag({ icon, label, tone }) {
         border: `1px solid ${c.border}`,
         borderRadius: 5,
         padding: "2px 6px",
+        cursor: title ? "help" : "default",
       }}
     >
       {icon} {label}
@@ -424,6 +441,7 @@ function SegmentRow({ segment, isHovered, onHover }) {
               icon="⚠"
               label={`${segment.distress_count} distress${segment.distress_count === 1 ? "" : "es"}`}
               tone="warn"
+              title="Distresses are visible pavement defects (cracking, potholes, rutting, etc.) flagged by Cyvl's road scan. More distresses = more deferred maintenance on this stretch."
             />
           )}
           {Object.entries(signCounts).map(([type, count]) => (
@@ -434,6 +452,18 @@ function SegmentRow({ segment, isHovered, onHover }) {
               tone="neutral"
             />
           ))}
+        </div>
+      )}
+      {segment.has_pavement_data && segment.distress_count > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+          Cyvl rates this segment's pavement{" "}
+          <span style={{ color: c.text, fontWeight: 500 }}>{pciLabel(segment.pavement_score)}</span>{" "}
+          ({segment.pavement_score}/100) and recorded{" "}
+          <span style={{ color: "#d97706", fontWeight: 500 }}>
+            {segment.distress_count} surface distress{segment.distress_count === 1 ? "" : "es"}
+          </span>{" "}
+          (cracking, patching, rutting, etc.) on this block
+          {segment.pavement_score < 56 ? " — likely a maintenance priority" : ""}.
         </div>
       )}
     </div>
@@ -940,6 +970,20 @@ export default function RouteMap() {
                 }}
               >
                 Segment breakdown
+              </div>
+              <div
+                style={{
+                  padding: "0 20px 12px",
+                  fontSize: 11,
+                  color: "#64748b",
+                  lineHeight: 1.5,
+                }}
+              >
+                Each row is one street segment along the route. The score badge is the
+                Cyvl pavement condition (0–100, higher is better). A{" "}
+                <span style={{ color: "#d97706" }}>⚠ distress</span> count is the number of
+                visible pavement defects (cracks, potholes, rutting) Cyvl detected on that
+                segment — hover a tag for details.
               </div>
               {routeData.segments.map((segment) => (
                 <SegmentRow
