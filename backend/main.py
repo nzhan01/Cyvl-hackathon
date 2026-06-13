@@ -178,6 +178,22 @@ def route(body: RouteIn):
     }
 
 
+@app.post("/api/nearby")
+def nearby(body: AddressIn):
+    """Nearest hospital / pharmacy / transit (live OSM) for a point — for map
+    markers on the Route tab. Lightweight: amenities only, no scoring."""
+    if body.lat is not None and body.lng is not None:
+        lat, lng = body.lat, body.lng
+    elif body.address:
+        loc = geo.geocode(body.address)
+        if loc is None:
+            raise HTTPException(400, f"Could not geocode: {body.address!r}")
+        lat, lng = loc
+    else:
+        raise HTTPException(400, "Provide address or lat/lng")
+    return {"lat": lat, "lng": lng, "amenities": geo.nearest_amenities(lat, lng)}
+
+
 @app.post("/api/directions")
 def directions_route(body: DirectionsIn):
     """Google walking directions -> per-street segments enriched with Cyvl data.
