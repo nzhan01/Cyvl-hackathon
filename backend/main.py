@@ -117,9 +117,13 @@ def score_address(body: AddressIn):
         issues.append("Sidewalk narrower than wheelchair minimum (1.0m)")
     if feats["pavement_score"] < 55:
         issues.append("Poor pavement condition on adjacent street")
+    if feats.get("ped_crossing_count", 0) == 0 and feats.get("safety_source") == "CYVL":
+        issues.append("No signalized pedestrian crossings detected nearby")
     return {
         "address": feats["address"], "lat": feats["lat"], "lng": feats["lng"],
-        "amenities": feats["amenities"], **result, "issues": issues,
+        "amenities": feats["amenities"], **result,
+        "safety_source": feats.get("safety_source"),
+        "validation": validation, "issues": issues,
     }
 
 
