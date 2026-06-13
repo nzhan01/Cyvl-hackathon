@@ -241,11 +241,16 @@ def generate_and_upload(lat: float, lng: float, address: str) -> str:
     # 1. Pull Cyvl infrastructure data
     infra = cyvl_client.infrastructure_at(lat, lng)
 
-    # 2. Get full walking route to nearest hospital
+    # 2. Get full walking route to the nearest amenity (hospital preferred).
+    # nearest_amenities can return None per category (no hardcoded fallback),
+    # so pick the first available and degrade to just the origin if none found.
     amenities = geo.nearest_amenities(lat, lng)
-    hosp = amenities["hospital"]
-    route = geo.walking_route((lat, lng), (hosp["lat"], hosp["lng"]))
-    coords = route["coords"][:120] # full route — no limit
+    dest = amenities.get("hospital") or amenities.get("pharmacy") or amenities.get("transit")
+    if dest:
+        route = geo.walking_route((lat, lng), (dest["lat"], dest["lng"]))
+        coords = route["coords"][:120]
+    else:
+        coords = [(lat, lng)]   # no amenity nearby — scene around the site only
     scores = cyvl_client.pavement_along_route(coords)
 
     # 3. Build OBJ + MTL
