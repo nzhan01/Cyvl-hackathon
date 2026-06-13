@@ -21,6 +21,7 @@ Behavior:
 from __future__ import annotations
 import math
 import os
+from pathlib import Path
 
 import requests
 
@@ -29,6 +30,11 @@ CYVL_BASE = os.getenv("CYVL_BASE", "https://i3.cyvl.app")
 CYVL_API_KEY = os.getenv("CYVL_API_KEY", "")
 CYVL_LIVE = bool(CYVL_API_KEY) and os.getenv("CYVL_LIVE", "true").lower() != "false"
 
+TOKEN_URL = "https://cyvl.app/auth/v1/oauth/token"
+_UA = "cyvl-hackathon-poc/1.0 (Mozilla/5.0)"
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+_access_token = CYVL_API_KEY  # mutable: refreshed in-process on 401
+
 # [west, south, east, north] — Somerville coverage.
 SOMERVILLE_BBOX = [-71.1343408, 42.3734084, -71.0752535, 42.4180395]
 
@@ -36,20 +42,68 @@ SOMERVILLE_BBOX = [-71.1343408, 42.3734084, -71.0752535, 42.4180395]
 # --------------------------------------------------------------------------- #
 # HTTP
 # --------------------------------------------------------------------------- #
+def _update_env(key: str, value: str) -> None:
+    """Persist a refreshed token to .env (best-effort) and os.environ."""
+    os.environ[key] = value
+    try:
+        lines = _ENV_PATH.read_text().splitlines() if _ENV_PATH.exists() else []
+        out, found = [], False
+        for ln in lines:
+            if ln.startswith(f"{key}="):
+                out.append(f"{key}={value}"); found = True
+            else:
+                out.append(ln)
+        if not found:
+            out.append(f"{key}={value}")
+        _ENV_PATH.write_text("\n".join(out) + "\n")
+    except Exception:
+        pass  # ephemeral FS (e.g. Render) — in-memory token is what matters
+
+
+def _refresh_token() -> bool:
+    """Exchange the saved refresh_token for a new access token. Returns success."""
+    global _access_token
+    rt = os.getenv("CYVL_REFRESH_TOKEN")
+    cid = os.getenv("CYVL_CLIENT_ID")
+    if not (rt and cid):
+        print("[cyvl] cannot refresh: missing CYVL_REFRESH_TOKEN / CYVL_CLIENT_ID "
+              "(re-run cyvl_oauth.py)")
+        return False
+    try:
+        r = requests.post(TOKEN_URL, data={
+            "grant_type": "refresh_token", "refresh_token": rt,
+            "client_id": cid, "resource": CYVL_BASE},
+            headers={"User-Agent": _UA, "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        tok = r.json()
+        _access_token = tok["access_token"]
+        _update_env("CYVL_API_KEY", _access_token)
+        if tok.get("refresh_token"):              # rotate if server issues a new one
+            _update_env("CYVL_REFRESH_TOKEN", tok["refresh_token"])
+        print("[cyvl] access token refreshed")
+        return True
+    except Exception as e:
+        print(f"[cyvl] token refresh failed: {e}")
+        return False
+
+
 def _get(path: str, params: dict) -> dict | None:
     if not CYVL_LIVE:
         return None
-    try:
-        r = requests.get(f"{CYVL_BASE}{path}",
-                         params={k: v for k, v in params.items() if v is not None},
-                         headers={"Authorization": f"Bearer {CYVL_API_KEY}",
-                                  "User-Agent": "cyvl-hackathon-poc/1.0 (Mozilla/5.0)"},
-                         timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:  # network / auth / shape — fall back to mock
-        print(f"[cyvl] {path} failed ({e}); using mock")
-        return None
+    clean = {k: v for k, v in params.items() if v is not None}
+    for attempt in (1, 2):
+        try:
+            r = requests.get(f"{CYVL_BASE}{path}", params=clean,
+                             headers={"Authorization": f"Bearer {_access_token}",
+                                      "User-Agent": _UA}, timeout=10)
+            if r.status_code == 401 and attempt == 1 and _refresh_token():
+                continue  # retry once with the freshly refreshed token
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:  # network / auth / shape — fall back to mock
+            print(f"[cyvl] {path} failed ({e}); using mock")
+            return None
+    return None
 
 
 def _features(fc: dict | None) -> list[dict]:

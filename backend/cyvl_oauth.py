@@ -109,6 +109,7 @@ def main():
         "scope": SCOPE,
     })
     client_id = client["client_id"]
+    _save_env("CYVL_CLIENT_ID", client_id)  # needed later for token refresh
 
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(16)
