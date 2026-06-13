@@ -1,24 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 
 const MAPBOX_TOKEN = process.env.REACT_APP_MAPBOX_TOKEN;
+const API_BASE = process.env.REACT_APP_API_BASE_URL || "http://localhost:8000";
 
+// Metadata only — scores come live from the backend (no mock values).
 const SCORE_CATEGORIES = [
-  { key: "navigation", label: "Navigation", icon: "🧭", score: 72 },
-  { key: "healthcare", label: "Healthcare", icon: "🏥", score: 88 },
-  { key: "outdoor_safety", label: "Outdoor safety", icon: "🛡️", score: 55 },
-  { key: "emergency", label: "Emergency", icon: "🚨", score: 91 },
-  {
-    key: "social_connection",
-    label: "Social connection",
-    icon: "🤝",
-    score: 63,
-  },
-  {
-    key: "displacement_risk",
-    label: "Displacement risk",
-    icon: "⚠️",
-    score: 44,
-  },
+  { key: "navigation", label: "Navigation", icon: "🧭" },
+  { key: "healthcare", label: "Healthcare", icon: "🏥" },
+  { key: "outdoor_safety", label: "Outdoor safety", icon: "🛡️" },
+  { key: "emergency", label: "Emergency", icon: "🚨" },
+  { key: "social_connection", label: "Social connection", icon: "🤝" },
+  { key: "displacement_risk", label: "Displacement risk", icon: "⚠️" },
 ];
 
 function ScoreBar({ score }) {
@@ -133,13 +125,20 @@ export default function WalkabilityMap() {
   const [selectedSite, setSelectedSite] = useState(null);
   const [loading, setLoading] = useState(false);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [scores, setScores] = useState(null);       // live dimensions from backend
+  const [overallScore, setOverallScore] = useState(null);
+  const [validation, setValidation] = useState(null);
+  const [issues, setIssues] = useState([]);
+  const [error, setError] = useState(null);
 
-  const overallScore = selectedSite
-    ? Math.round(
-        SCORE_CATEGORIES.reduce((sum, c) => sum + c.score, 0) /
-          SCORE_CATEGORIES.length
-      )
-    : null;
+  const resetAssessment = () => {
+    setSelectedSite(null);
+    setScores(null);
+    setOverallScore(null);
+    setValidation(null);
+    setIssues([]);
+    setError(null);
+  };
 
   useEffect(() => {
     if (mapRef.current || !mapContainer.current) return;
@@ -244,10 +243,27 @@ export default function WalkabilityMap() {
         .addTo(mapRef.current);
     }
 
-    setTimeout(() => {
-      setSelectedSite({ address: feature.place_name, lng, lat });
-      setLoading(false);
-    }, 1200);
+    setSelectedSite({ address: feature.place_name, lng, lat });
+    setScores(null);
+    setError(null);
+
+    fetch(`${API_BASE}/api/score-address`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat, lng }),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`Score request failed: ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setScores(d.dimensions);
+        setOverallScore(d.overall);
+        setValidation(d.validation);
+        setIssues(d.issues || []);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   };
 
   return (
@@ -324,7 +340,7 @@ export default function WalkabilityMap() {
                   onClick={() => {
                     setAddress("");
                     setSuggestions([]);
-                    setSelectedSite(null);
+                    resetAssessment();
                   }}
                   style={{
                     background: "none",
@@ -504,7 +520,24 @@ export default function WalkabilityMap() {
           </div>
         )}
 
-        {selectedSite && !loading && (
+        {selectedSite && !loading && error && (
+          <div
+            style={{
+              padding: 24,
+              color: "#fca5a5",
+              fontSize: 13,
+              textAlign: "center",
+              lineHeight: 1.6,
+            }}
+          >
+            Could not load live scores for this site.
+            <div style={{ color: "#64748b", fontSize: 12, marginTop: 6 }}>
+              {error}
+            </div>
+          </div>
+        )}
+
+        {selectedSite && !loading && scores && (
           <>
             {/* Street name + overall score */}
             <div
@@ -565,6 +598,27 @@ export default function WalkabilityMap() {
                 >
                   Somerville, MA
                 </span>
+                {validation && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      padding: "3px 8px",
+                      borderRadius: 6,
+                      background: validation.consistent
+                        ? "rgba(34,197,94,0.15)"
+                        : "rgba(245,158,11,0.15)",
+                      color: validation.consistent ? "#86efac" : "#fcd34d",
+                      border: `1px solid ${
+                        validation.consistent
+                          ? "rgba(34,197,94,0.3)"
+                          : "rgba(245,158,11,0.3)"
+                      }`,
+                    }}
+                    title={`Model predicted ${validation.model_predicted}, residual ${validation.residual}`}
+                  >
+                    {validation.consistent ? "✓ Model-validated" : "⚠ Check scores"}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -624,12 +678,44 @@ export default function WalkabilityMap() {
                         {cat.label}
                       </span>
                     </div>
-                    <ScoreBadge score={cat.score} />
+                    <ScoreBadge score={scores[cat.key]} />
                   </div>
-                  <ScoreBar score={cat.score} />
+                  <ScoreBar score={scores[cat.key]} />
                 </div>
               ))}
             </div>
+
+            {issues.length > 0 && (
+              <div style={{ padding: "4px 20px 16px" }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#475569",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    marginBottom: 8,
+                  }}
+                >
+                  Flagged issues
+                </div>
+                {issues.map((iss, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-start",
+                      fontSize: 12,
+                      color: "#fca5a5",
+                      marginBottom: 6,
+                    }}
+                  >
+                    <span>⚠️</span>
+                    <span>{iss}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Footer action */}
             <div
