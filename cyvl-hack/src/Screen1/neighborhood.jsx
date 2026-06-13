@@ -124,7 +124,7 @@ function APSViewerPanel({ site, onClose }) {
   const [statusMsg, setStatusMsg] = useState("Connecting to Autodesk...");
 
   const loadViewerSDK = () =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       if (window.Autodesk?.Viewing) {
         resolve();
         return;
@@ -136,6 +136,7 @@ function APSViewerPanel({ site, onClose }) {
       const script = document.createElement("script");
       script.src = `https://developer.api.autodesk.com/modelderivative/v2/viewers/${APS_VIEWER_VERSION}/viewer3D.min.js`;
       script.onload = resolve;
+      script.onerror = () => reject(new Error("Failed to load Autodesk Viewer SDK"));
       document.head.appendChild(script);
     });
 
