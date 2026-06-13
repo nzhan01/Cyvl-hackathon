@@ -257,9 +257,13 @@ def generate_and_upload(lat: float, lng: float, address: str) -> str:
         zf.writestr("scene.mtl", mtl_content)
     zip_bytes = zip_buffer.getvalue()
 
-    # 5. Upload to APS OSS
-    safe_addr = address.replace(" ", "").replace(",", "").replace("/", "")[:40]
-    filename = f"cyvl_{safe_addr}.zip"
+    # 5. Upload to APS OSS. Include a content hash in the filename so changed
+    # geometry produces a NEW object/URN — otherwise APS keeps serving the
+    # previously-translated model for the same filename (stale 3D view).
+    import hashlib
+    content_hash = hashlib.sha1(obj_content.encode()).hexdigest()[:8]
+    safe_addr = address.replace(" ", "").replace(",", "").replace("/", "")[:32]
+    filename = f"cyvl_{safe_addr}_{content_hash}.zip"
     urn = aps.upload_obj(filename, zip_bytes)
 
     # 6. Trigger SVF2 translation with rootFilename
