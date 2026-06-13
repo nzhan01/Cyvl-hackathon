@@ -18,21 +18,25 @@ OSRM = "https://router.project-osrm.org/route/v1/foot"
 OVERPASS = "https://overpass-api.de/api/interpreter"
 HEADERS = {"User-Agent": "cyvl-hackathon-poc/1.0"}
 
-# OSM tag filters per amenity category. Cyvl has no POIs, so amenities come from
-# OpenStreetMap (Overpass) — nearest hospital / pharmacy-or-grocery / transit.
-AMENITY_QUERIES = {
-    "hospital": ['["amenity"="hospital"]', '["amenity"="clinic"]'],
-    "pharmacy": ['["amenity"="pharmacy"]', '["shop"="supermarket"]', '["shop"="convenience"]'],
-    "transit":  ['["highway"="bus_stop"]', '["railway"="station"]', '["public_transport"="platform"]'],
+# OSM tag filters per amenity category, in PRIORITY TIERS. Cyvl has no POIs, so
+# amenities come from OpenStreetMap (Overpass). We take the nearest match from
+# the FIRST tier that returns anything — so a real pharmacy beats a convenience
+# store, a real hospital beats a small clinic, and a T station beats a bus stop.
+AMENITY_TIERS = {
+    "hospital": [
+        ['["amenity"="hospital"]', '["healthcare"="hospital"]'],
+        ['["amenity"="clinic"]', '["healthcare"="clinic"]'],
+    ],
+    "pharmacy": [
+        ['["amenity"="pharmacy"]', '["healthcare"="pharmacy"]'],
+        ['["shop"="supermarket"]', '["shop"="grocery"]'],
+        ['["shop"="convenience"]'],
+    ],
+    "transit": [
+        ['["railway"="station"]', '["station"="subway"]', '["railway"="subway_entrance"]'],
+        ['["highway"="bus_stop"]', '["public_transport"="platform"]'],
+    ],
 }
-
-# Hardcoded fallback (used only if Overpass is unreachable mid-demo).
-DEMO_AMENITIES = {
-    "hospital":  {"name": "CHA Somerville Hospital",      "lat": 42.3876, "lng": -71.1009},
-    "pharmacy":  {"name": "CVS Pharmacy (Davis Square)",  "lat": 42.3967, "lng": -71.1226},
-    "transit":   {"name": "Davis Square MBTA Station",    "lat": 42.3968, "lng": -71.1218},
-}
-
 
 def geocode(address: str) -> tuple[float, float] | None:
     try:
@@ -56,48 +60,56 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     return 2 * R * math.asin(math.sqrt(h))
 
 
-def nearest_amenity(lat: float, lng: float, category: str,
-                    radius_m: int = 1600) -> dict | None:
-    """Nearest OSM amenity of `category` to a point, via Overpass. None if none found."""
-    clauses = AMENITY_QUERIES.get(category, [])
-    if not clauses:
-        return None
+def _nearest_from_clauses(lat: float, lng: float, clauses: list[str],
+                          radius_m: int) -> dict | None:
+    """Nearest OSM element matching any of `clauses` within radius. None if none."""
     parts = []
     for sel in clauses:
         for el in ("node", "way"):
             parts.append(f'{el}{sel}(around:{radius_m},{lat},{lng});')
-    query = f"[out:json][timeout:15];({''.join(parts)});out center 30;"
+    query = f"[out:json][timeout:15];({''.join(parts)});out center 60;"
     try:
         r = requests.post(OVERPASS, data={"data": query}, headers=HEADERS, timeout=20)
         r.raise_for_status()
-        best = None
-        for el in r.json().get("elements", []):
-            elat = el.get("lat") or (el.get("center") or {}).get("lat")
-            elng = el.get("lon") or (el.get("center") or {}).get("lon")
-            if elat is None or elng is None:
-                continue
-            d = _haversine_km((lat, lng), (elat, elng))
-            tags = el.get("tags", {})
-            cand = {"name": tags.get("name", category.title()), "lat": elat,
-                    "lng": elng, "distance_km": round(d, 3), "source": "OSM"}
-            if best is None or cand["distance_km"] < best["distance_km"]:
-                best = cand
-        return best
     except Exception:
         return None
+    best = None
+    for el in r.json().get("elements", []):
+        elat = el.get("lat") or (el.get("center") or {}).get("lat")
+        elng = el.get("lon") or (el.get("center") or {}).get("lon")
+        if elat is None or elng is None:
+            continue
+        d = _haversine_km((lat, lng), (elat, elng))
+        tags = el.get("tags", {})
+        cand = {"name": tags.get("name", "Unnamed"), "lat": elat, "lng": elng,
+                "distance_km": round(d, 3), "source": "OSM"}
+        if best is None or cand["distance_km"] < best["distance_km"]:
+            best = cand
+    return best
+
+
+def nearest_amenity(lat: float, lng: float, category: str,
+                    radius_m: int = 2000) -> dict | None:
+    """Nearest OSM amenity of `category`, honoring priority tiers.
+
+    Returns the nearest match from the first tier that yields a result, so a
+    real pharmacy/hospital/T-station is preferred over a convenience store /
+    clinic / bus stop. None if nothing found in any tier.
+    """
+    for tier in AMENITY_TIERS.get(category, []):
+        found = _nearest_from_clauses(lat, lng, tier, radius_m)
+        if found:
+            return found
+    return None
 
 
 def nearest_amenities(lat: float, lng: float) -> dict:
-    """Nearest hospital / pharmacy / transit for a point, with hardcoded fallback."""
-    out = {}
-    for cat in ("hospital", "pharmacy", "transit"):
-        found = nearest_amenity(lat, lng, cat)
-        if found is None:
-            fb = DEMO_AMENITIES[cat]
-            found = {**fb, "distance_km": round(_haversine_km((lat, lng), (fb["lat"], fb["lng"])), 3),
-                     "source": "FALLBACK"}
-        out[cat] = found
-    return out
+    """Nearest hospital / pharmacy / transit for a point (all live OSM).
+
+    A category maps to None if nothing is found nearby — no hardcoded fallback.
+    """
+    return {cat: nearest_amenity(lat, lng, cat)
+            for cat in ("hospital", "pharmacy", "transit")}
 
 
 def walking_route(origin: tuple[float, float], dest: tuple[float, float]) -> dict:

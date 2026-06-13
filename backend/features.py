@@ -43,15 +43,21 @@ def build_features(address: str | None = None, lat: float | None = None,
     ext = _external_stub(lat, lng)
 
     # Dynamically discover nearest amenities from OpenStreetMap (not Cyvl).
+    # A category may be None if nothing is found nearby (no hardcoded fallback).
     amenities = geo.nearest_amenities(lat, lng)
 
-    hosp = amenities["hospital"]
-    hosp_route = geo.walking_route((lat, lng), (hosp["lat"], hosp["lng"]))
-    hosp_scores = cyvl_client.pavement_along_route(hosp_route["coords"])
+    def _route_scores(amenity):
+        if not amenity:
+            return None, []
+        route = geo.walking_route((lat, lng), (amenity["lat"], amenity["lng"]))
+        return route, cyvl_client.pavement_along_route(route["coords"])
 
-    pharm = amenities["pharmacy"]
-    pharm_route = geo.walking_route((lat, lng), (pharm["lat"], pharm["lng"]))
-    pharm_scores = cyvl_client.pavement_along_route(pharm_route["coords"])
+    hosp_route, hosp_scores = _route_scores(amenities["hospital"])
+    pharm_route, pharm_scores = _route_scores(amenities["pharmacy"])
+
+    FAR_KM = 99.0  # sentinel distance when an amenity isn't found nearby
+    pharm_km = pharm_route["distance_km"] if pharm_route else FAR_KM
+    hosp_km = hosp_route["distance_km"] if hosp_route else FAR_KM
 
     return {
         # location + discovered amenities
@@ -65,12 +71,12 @@ def build_features(address: str | None = None, lat: float | None = None,
         "road_width_m": infra["road_width_m"],
         # healthcare (route to pharmacy as proxy for daily-care errands)
         "healthcare_route_scores": pharm_scores,
-        "healthcare_distance_km": pharm_route["distance_km"],
+        "healthcare_distance_km": pharm_km,
         # emergency (route to hospital)
         "hospital_route_score": sum(hosp_scores) / len(hosp_scores) if hosp_scores else 0,
-        "hospital_distance_km": hosp_route["distance_km"],
+        "hospital_distance_km": hosp_km,
         # social
-        "nearest_center_km": pharm_route["distance_km"],   # stub until senior-center data
+        "nearest_center_km": pharm_km,   # proxy until senior-center data
         "social_route_scores": pharm_scores,
         "parks_within_800m": ext["parks_within_800m"],
         # safety (REAL Cyvl assets) + external risk penalties (stub for now)
