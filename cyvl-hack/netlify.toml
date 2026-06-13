@@ -1,0 +1,20 @@
+# Netlify build config for the React (CRA) frontend.
+[build]
+  base = "cyvl-hack"
+  command = "npm run build"
+  publish = "build"            # relative to base -> cyvl-hack/build
+
+[build.environment]
+  # Backend API (not a secret). Set REACT_APP_MAPBOX_TOKEN in the Netlify
+  # dashboard (Site settings -> Environment) since it's account-specific.
+  REACT_APP_API_BASE_URL = "https://cyvl-hackathon.onrender.com"
+  # CRA treats lint warnings as errors when CI=true (Netlify default) — disable
+  # so the build doesn't fail on harmless unused-var warnings.
+  CI = "false"
+  NODE_VERSION = "20"
+
+# Single-page app: serve index.html for client routes.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
