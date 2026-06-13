@@ -22,10 +22,23 @@ import features
 import geo
 import llm
 import scoring
+from models import validator
 
 app = FastAPI(title="Pedestrian Route Intelligence", version="0.1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Train the validation model once at startup (seconds). Used to cross-check that
+# the rule-based overall score is internally consistent.
+_VALIDATION_MODEL, _VALIDATION_METRICS = validator.train()
+
+# Frontend (gokhul branch) uses these dimension keys; expose as aliases so the
+# React code can do dimensions[cat.key] directly. Canonical keys stay too.
+FRONTEND_ALIASES = {
+    "safety": "outdoor_safety",
+    "social": "social_connection",
+    "displacement": "displacement_risk",
+}
 
 
 class AddressIn(BaseModel):
@@ -66,6 +79,16 @@ def score_address(body: AddressIn):
     except ValueError as e:
         raise HTTPException(400, str(e))
     result = scoring.score_all(feats)
+    dims = result["dimensions"]
+
+    # Validate the score against the trained model BEFORE adding alias keys
+    # (validator expects the canonical 6 keys).
+    validation = validator.validate(_VALIDATION_MODEL, dims)
+
+    # Add frontend-friendly aliases alongside the canonical keys.
+    for canon, alias in FRONTEND_ALIASES.items():
+        dims[alias] = dims[canon]
+
     issues = []
     if not feats["curb_cut_present"]:
         issues.append("Missing curb ramp near site")
@@ -75,8 +98,12 @@ def score_address(body: AddressIn):
         issues.append("Sidewalk narrower than wheelchair minimum (1.0m)")
     if feats["pavement_score"] < 55:
         issues.append("Poor pavement condition on adjacent street")
+    if feats.get("ped_crossing_count", 0) == 0 and feats.get("safety_source") == "CYVL":
+        issues.append("No signalized pedestrian crossings detected nearby")
     return {"address": feats["address"], "lat": feats["lat"], "lng": feats["lng"],
-            "amenities": feats["amenities"], **result, "issues": issues}
+            "amenities": feats["amenities"], **result,
+            "safety_source": feats.get("safety_source"),
+            "validation": validation, "issues": issues}
 
 
 @app.post("/api/route")

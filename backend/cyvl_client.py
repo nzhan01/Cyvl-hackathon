@@ -210,6 +210,38 @@ def infrastructure_at(lat: float, lng: float, radius_m: int = 30) -> dict:
     }
 
 
+# Cyvl above-ground asset types that signal pedestrian safety.
+_SAFETY_LIGHTING = ["LUMINARIES"]
+_SAFETY_CROSSING = ["PEDESTRIAN_PUSH_BUTTON", "STAND_ALONE_PEDESTRIAN_HEAD",
+                    "TRAFFIC_SIGNAL", "FLASHING_BEACONS"]
+_SAFETY_SURVEILLANCE = ["CCTV"]
+
+
+def safety_assets_at(lat: float, lng: float, radius_m: int = 300) -> dict:
+    """Real Cyvl safety-infrastructure counts near a point. Feeds score_safety."""
+    if not CYVL_LIVE:
+        s = _mock_seed(lat, lng)
+        return {"lighting_count": int(s * 6), "ped_crossing_count": int(s * 10),
+                "surveillance_count": int(s * 2), "crosswalk_count": int(s * 4),
+                "source": "MOCK"}
+
+    base = {"project_id": PROJECT_ID, "radius_lat": lat, "radius_lng": lng,
+            "radius_meters": radius_m, "limit": 300}
+    lighting = _features(_get("/api/v1/assets", {**base, "asset_type": _SAFETY_LIGHTING}))
+    crossing = _features(_get("/api/v1/assets", {**base, "asset_type": _SAFETY_CROSSING}))
+    surveil = _features(_get("/api/v1/assets", {**base, "asset_type": _SAFETY_SURVEILLANCE}))
+    marks = _features(_get("/api/v1/markings", base))
+    crosswalks = [m for m in marks
+                  if "CROSS" in str(_prop(m, "type", "category", default="")).upper()]
+    return {
+        "lighting_count": len(lighting),
+        "ped_crossing_count": len(crossing),
+        "surveillance_count": len(surveil),
+        "crosswalk_count": len(crosswalks) or len(marks),
+        "source": "CYVL",
+    }
+
+
 def pavement_along_route(coords: list[tuple[float, float]]) -> list[float]:
     """Per-segment pavement score for a route polyline. Feeds route scoring.
 

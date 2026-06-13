@@ -31,12 +31,21 @@ def score_healthcare(route_scores: list[float], distance_km: float) -> int:
 
 
 # --- Dimension 3: Outdoor safety (20%) --------------------------------------
-def score_safety(complaints_311: int, crashes_nearby: int,
-                 has_lighting: bool) -> int:
-    complaint_penalty = min(40, complaints_311 * 8)   # last 12 months on block
-    crash_penalty = min(30, crashes_nearby * 10)      # within 100m, last 3 yrs
-    lighting_bonus = 10 if has_lighting else 0
-    return round(max(0, 100 - complaint_penalty - crash_penalty + lighting_bonus))
+# Built UP from REAL Cyvl above-ground safety infrastructure near the site:
+# streetlights (LUMINARIES), pedestrian crossing infra (push buttons, signal
+# heads, traffic signals, beacons), crosswalk markings, and CCTV. Optional
+# external risk penalties (311 complaints, crashes) subtract if/when wired.
+def score_safety(lighting_count: int, ped_crossing_count: int,
+                 surveillance_count: int, crosswalk_count: int = 0,
+                 complaints_311: int = 0, crashes_nearby: int = 0) -> int:
+    lighting = min(30, lighting_count * 6)          # night visibility
+    crossings = min(40, ped_crossing_count * 4)     # safe, signalized crossings
+    crosswalks = min(20, crosswalk_count * 5)       # marked crossings
+    surveillance = min(10, surveillance_count * 5)  # CCTV presence
+    score = lighting + crossings + crosswalks + surveillance
+    score -= min(25, complaints_311 * 5)            # external risk (optional)
+    score -= min(20, crashes_nearby * 7)
+    return round(max(0, min(100, score)))
 
 
 # --- Dimension 4: Emergency access (15%) ------------------------------------
@@ -96,8 +105,9 @@ def score_all(features: dict) -> dict:
         "healthcare": score_healthcare(
             features["healthcare_route_scores"], features["healthcare_distance_km"]),
         "safety": score_safety(
-            features["complaints_311"], features["crashes_nearby"],
-            features["has_lighting"]),
+            features["lighting_count"], features["ped_crossing_count"],
+            features["surveillance_count"], features["crosswalk_count"],
+            features["complaints_311"], features["crashes_nearby"]),
         "emergency": score_emergency(
             features["road_width_m"], features["hospital_route_score"],
             features["hospital_distance_km"]),

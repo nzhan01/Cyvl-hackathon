@@ -39,6 +39,7 @@ def build_features(address: str | None = None, lat: float | None = None,
         lat, lng = loc
 
     infra = cyvl_client.infrastructure_at(lat, lng)
+    safety = cyvl_client.safety_assets_at(lat, lng)   # REAL Cyvl safety assets
     ext = _external_stub(lat, lng)
 
     # Dynamically discover nearest amenities from OpenStreetMap (not Cyvl).
@@ -72,10 +73,14 @@ def build_features(address: str | None = None, lat: float | None = None,
         "nearest_center_km": pharm_route["distance_km"],   # stub until senior-center data
         "social_route_scores": pharm_scores,
         "parks_within_800m": ext["parks_within_800m"],
-        # safety + displacement (external)
+        # safety (REAL Cyvl assets) + external risk penalties (stub for now)
+        "lighting_count": safety["lighting_count"],
+        "ped_crossing_count": safety["ped_crossing_count"],
+        "surveillance_count": safety["surveillance_count"],
+        "crosswalk_count": safety["crosswalk_count"],
+        "safety_source": safety["source"],
         "complaints_311": ext["complaints_311"],
         "crashes_nearby": ext["crashes_nearby"],
-        "has_lighting": ext["has_lighting"],
         "tax_increase_pct": ext["tax_increase_pct"],
         "senior_pct": ext["senior_pct"],
         "new_permits_nearby": ext["new_permits_nearby"],
