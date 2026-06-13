@@ -54,7 +54,9 @@ def get_token() -> str:
             "client_id": APS_CLIENT_ID,
             "client_secret": APS_CLIENT_SECRET,
             "grant_type": "client_credentials",
-            "scope": "data:read data:write data:create bucket:create bucket:read",
+            # viewables:read is required for the browser Viewer to load the
+            # translated model; the rest cover OSS upload + translation.
+            "scope": "data:read data:write data:create bucket:create bucket:read viewables:read",
         },
         timeout=15,
     )
