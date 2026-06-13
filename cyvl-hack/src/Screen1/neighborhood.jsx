@@ -102,7 +102,7 @@ function OverallScore({ score }) {
           style={{
             fontSize: 22,
             fontWeight: 700,
-            color: "#111827",
+            color: "#f1f5f9",
             lineHeight: 1,
           }}
         >
@@ -136,7 +136,8 @@ function APSViewerPanel({ site, onClose }) {
       const script = document.createElement("script");
       script.src = `https://developer.api.autodesk.com/modelderivative/v2/viewers/${APS_VIEWER_VERSION}/viewer3D.min.js`;
       script.onload = resolve;
-      script.onerror = () => reject(new Error("Failed to load Autodesk Viewer SDK"));
+      script.onerror = () =>
+        reject(new Error("Failed to load Autodesk Viewer SDK"));
       document.head.appendChild(script);
     });
 
