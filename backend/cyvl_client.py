@@ -242,28 +242,37 @@ def safety_assets_at(lat: float, lng: float, radius_m: int = 300) -> dict:
     }
 
 
-def pavement_along_route(coords: list[tuple[float, float]]) -> list[float]:
-    """Per-segment pavement score for a route polyline. Feeds route scoring.
+def pavement_detail_along_route(coords: list[tuple[float, float]]) -> list[dict]:
+    """Per-point {score, street_name} from the nearest Cyvl pavement segment.
 
     One bbox query for the whole route, then nearest pavement feature per point.
     """
     if not coords:
         return []
     if not CYVL_LIVE:
-        return [_mock_infra(lat, lng)["pavement_score"] for lat, lng in coords]
+        return [{"score": _mock_infra(lat, lng)["pavement_score"],
+                 "street_name": "Unknown"} for lat, lng in coords]
 
     lats = [c[0] for c in coords]; lngs = [c[1] for c in coords]
     pad = 0.0008  # ~80m
     bbox = f"{min(lngs)-pad},{min(lats)-pad},{max(lngs)+pad},{max(lats)+pad}"
     feats = _features(_get("/api/v1/pavement/scores",
                            {"project_id": PROJECT_ID, "bbox": bbox, "limit": 500}))
-    pts = [(p, _extract_score(f)) for f in feats
+    pts = [(p, f) for f in feats
            if (p := _feature_lat_lng(f)) and _extract_score(f) is not None]
     if not pts:
-        return [_mock_infra(lat, lng)["pavement_score"] for lat, lng in coords]
+        return [{"score": _mock_infra(lat, lng)["pavement_score"],
+                 "street_name": "Unknown"} for lat, lng in coords]
 
     out = []
     for c in coords:
-        nearest = min(pts, key=lambda ps: _haversine_m(c, ps[0]))
-        out.append(nearest[1])
+        _, feat = min(pts, key=lambda pf: _haversine_m(c, pf[0]))
+        out.append({"score": _extract_score(feat),
+                    "street_name": _prop(feat, "address_st", "street_name",
+                                         default="Unknown")})
     return out
+
+
+def pavement_along_route(coords: list[tuple[float, float]]) -> list[float]:
+    """Per-point pavement score for a route polyline (scores only)."""
+    return [d["score"] for d in pavement_detail_along_route(coords)]

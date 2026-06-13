@@ -127,24 +127,43 @@ def score_address(body: AddressIn):
     }
 
 
+# Repair-cost model (matches the frontend's documented contract).
+REPAIR_THRESHOLD = 70      # pavement score at/above which no repair is needed
+REPAIR_COST_PER_FT = 45    # $/ft stand-in
+
+
 @app.post("/api/route")
 def route(body: RouteIn):
     origin, dest = _to_latlng(body.origin), _to_latlng(body.dest)
     r = geo.walking_route(origin, dest)
-    scores = cyvl_client.pavement_along_route(r["coords"])
-    segments = [
-        {
-            "from": list(r["coords"][i]),
-            "to": list(r["coords"][i + 1]),
-            "pavement_score": scores[i],
-            "band": _segment_band(scores[i]),
-        }
-        for i in range(len(r["coords"]) - 1)
-    ]
+    coords = r["coords"]                      # [(lat, lng), ...]
+    detail = cyvl_client.pavement_detail_along_route(coords)
+
+    segments = []
+    for i in range(len(coords) - 1):
+        a, b = coords[i], coords[i + 1]
+        score = detail[i]["score"]
+        length_ft = round(geo._haversine_km(a, b) * 1000 * 3.28084)
+        repair_cost = round(
+            max(0, REPAIR_THRESHOLD - score) * REPAIR_COST_PER_FT * length_ft / 100, 2)
+        segments.append({
+            "id": i,
+            "from": [a[1], a[0]],             # GeoJSON / Mapbox order: [lng, lat]
+            "to": [b[1], b[0]],
+            "street_name": detail[i]["street_name"],
+            "pavement_score": score,
+            "band": _segment_band(score),
+            "length_ft": length_ft,
+            "repair_cost": repair_cost,
+        })
+
+    scores = [s["pavement_score"] for s in segments]
     avg = round(sum(scores) / len(scores)) if scores else 0
+    total_repair = round(sum(s["repair_cost"] for s in segments), 2)
     return {
         "distance_km": round(r["distance_km"], 3),
         "walkability_score": avg,
+        "total_repair_cost": total_repair,
         "segments": segments,
     }
 
